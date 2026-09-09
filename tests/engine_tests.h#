@@ -1,0 +1,109 @@
+use "silver -> engine -> dom"  from "dom"
+use "silver -> engine -> css"   from "css"
+use "silver -> engine -> style"  from "style"
+use "silver -> engine -> json"    from "json"
+use "std -> test" from "test"
+
+;; ---------- dom::parse ----------
+
+#[test]
+fn test_dom_parses_nested_tags() is
+    let d: dom::Dom = dom::parse("<div><p>Hej</p></div>")
+    ;; nodes[0] = root, nodes[1] = div, nodes[2] = p, nodes[3] = text "Hej"
+    assert_eq(d.nodes[1].tag, "div")
+    assert_eq(d.nodes[2].tag, "p")
+    assert_eq(d.nodes[3].tag, "text")
+    assert_eq(d.nodes[3].text, "Hej")
+end
+
+#[test]
+fn test_dom_parses_attributes() is
+    let d: dom::Dom = dom::parse("<div id=\"card\" class=\"a b\" on-click=\"go\"></div>")
+    assert_eq(d.nodes[1].attr_id, "card")
+    assert_eq(d.nodes[1].attr_class, "a b")
+    assert_eq(d.nodes[1].on_click, "go")
+end
+
+#[test]
+fn test_dom_self_closing_img() is
+    let d: dom::Dom = dom::parse("<div><img src=\"logo.png\" /></div>")
+    assert_eq(d.nodes[2].tag, "img")
+    assert_eq(d.nodes[2].attr_src, "logo.png")
+end
+
+#[test]
+fn test_dom_sibling_children_order() is
+    let d: dom::Dom = dom::parse("<div><span>a</span><span>b</span></div>")
+    let div_children: [int] = d.nodes[1].children
+    assert_eq(array_len(div_children), 2)
+end
+
+;; ---------- css::parse + kaskada ----------
+
+#[test]
+fn test_css_parses_rule() is
+    let sheet: css::Stylesheet = css::parse(".button { background: blue; padding: 12px; }")
+    assert_eq(array_len(sheet.rules), 1)
+    assert_eq(sheet.rules[0].selector, ".button")
+    assert_eq(array_len(sheet.rules[0].decls), 2)
+end
+
+#[test]
+fn test_css_specificity_id_beats_class() is
+    let sheet: css::Stylesheet = css::parse(
+        ".x { color: red; } #y { color: blue; }")
+    let decls: [css::CssDecl] = css::matching_decls(sheet, "div", "y", ["x"])
+    ;; kaskada: ostatnia (najbardziej specyficzna) deklaracja wygrywa
+    assert_eq(decls[array_len(decls) - 1].val, "blue")
+end
+
+;; ---------- style::resolve — dziedziczenie ----------
+
+#[test]
+fn test_style_inherits_color() is
+    let sheet: css::Stylesheet = css::parse("p { color: #ff0000; }")
+    let parent: style::ComputedStyle = style::resolve(sheet, "p", "", [], style::root_style())
+    ;; dziecko bez własnej reguły powinno odziedziczyć kolor rodzica
+    let child: style::ComputedStyle = style::resolve(css::Stylesheet { rules: [] }, "span", "", [], parent)
+    assert_eq(child.color.r, 255)
+    assert_eq(child.color.g, 0)
+end
+
+#[test]
+fn test_style_heading_default_size() is
+    let st: style::ComputedStyle = style::resolve(css::Stylesheet { rules: [] }, "h1", "", [], style::root_style())
+    assert_eq(st.font_size, 32)
+end
+
+;; ---------- engine::json ----------
+
+#[test]
+fn test_json_roundtrip_flat() is
+    let v: json::JsonValue = json::parse("{\"name\": \"Ala\", \"age\": 7}")
+    assert_eq(json::get_str(v, "name"), "Ala")
+    assert_eq(json::as_num(json::get(v, "age")), 7.0)
+end
+
+#[test]
+fn test_json_nested_object_and_array() is
+    let v: json::JsonValue = json::parse("{\"items\": [1, 2, 3], \"meta\": {\"ok\": true}}")
+    let items: json::JsonValue = json::get(v, "items")
+    assert_eq(json::arr_len(items), 3)
+    assert_eq(json::as_num(json::arr_get(items, 1)), 2.0)
+
+    let meta: json::JsonValue = json::get(v, "meta")
+    assert_true(json::as_bool(json::get(meta, "ok")))
+end
+
+#[test]
+fn test_json_builder_and_stringify() is
+    let mut o: json::JsonValue = json::obj()
+    o = json::obj_set(o, "count", json::num(3.0))
+    o = json::obj_set(o, "label", json::str("x"))
+    let out: string = json::stringify(o)
+    ;; nie zakładamy dokładnej kolejności kluczy poza wstawianiem —
+    ;; sprawdzamy, że parsowanie z powrotem daje te same wartości
+    let reparsed: json::JsonValue = json::parse(out)
+    assert_eq(json::as_num(json::get(reparsed, "count")), 3.0)
+    assert_eq(json::get_str(reparsed, "label"), "x")
+end

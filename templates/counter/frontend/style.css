@@ -1,0 +1,9 @@
+.page { background: #f2f2f5; padding: 24px; }
+.card { background: white; padding: 20px; border: 1px; border-color: #dddddd; }
+h1 { color: #202020; font-size: 26px; }
+p  { color: #555555; font-size: 14px; }
+
+.button { padding: 12px; margin: 6px; }
+.plus  { background: #2f9e50; }
+.minus { background: #c94141; }
+.button span { color: white; font-size: 16px; }

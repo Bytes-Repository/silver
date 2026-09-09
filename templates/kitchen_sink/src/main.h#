@@ -1,0 +1,26 @@
+use "silver -> app"    from "app"
+use "silver -> dialog" from "dialog"
+
+fn say_hello(args_json: string) -> string is
+    ;; app::input_value czyta na żywo to, co user wpisał w <input id="name">
+    ;; — command handler nie ma bezpośredniego dostępu do App (patrz
+    ;; komentarz w ROADMAP.md o closures), więc odczyt robimy w
+    ;; on_tick zamiast tutaj; tu tylko potwierdzamy kliknięcie.
+    dialog::info("Silver", "Kliknięto przycisk — sprawdź konsolę/log.")
+    return "{\"ok\": \"true\"}"
+end
+
+fn sync(a: app::App) -> app::App is
+    let name: string = app::input_value(a, "name")
+    return app::set_state(a, "name", if name != "" then name else "(wpisz coś)")
+end
+
+fn main() is
+    let mut a = app::new("Kitchen Sink", 480, 360)
+    a = app::with_font(a, "frontend/fonts/DejaVuSans.ttf", 16)
+    a = app::load_html(a, "frontend/index.html")
+    a = app::load_css(a, "frontend/style.css")
+    a = app::command(a, "say_hello", say_hello)
+    a = app::on_tick(a, sync)
+    app::run(a)
+end

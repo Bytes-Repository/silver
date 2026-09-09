@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native deps (SDL2, SDL2_ttf, SDL2_image)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev pkg-config
+
+      # TODO: zastąp realną instrukcją instalacji toolchaina H#
+      # (LLVM 21 + Rust 1.85+) gdy będzie oficjalnie udokumentowana.
+      - name: Install H# toolchain
+        run: |
+          echo "TODO: zainstaluj h# / bytes CLI (patrz H# README)"
+
+      - name: Build native shim
+        run: |
+          cd native
+          gcc -shared -fPIC -O2 silver_shim.c -o libsilvershim.so \
+              $(pkg-config --cflags --libs sdl2 SDL2_ttf SDL2_image)
+
+      - name: h# check (syntax/typy)
+        run: |
+          echo "TODO: h# check src/"
+
+      - name: bytes test (testy jednostkowe)
+        run: |
+          echo "TODO: bytes test"

@@ -1,0 +1,13 @@
+[package]
+-> name        => silver-kitchen-sink
+-> version     => 0.1.0
+-> description => Przykład Silver v0.3 — flex, input, dialog
+-> license     => MIT
+
+[build]
+-> lang   => h#
+-> entry  => src/main.h#
+-> output => build/silver-kitchen-sink
+
+[deps]
+-> silver => git

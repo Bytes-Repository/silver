@@ -1,0 +1,14 @@
+[package]
+-> name        => my-silver-app
+-> version     => 0.1.0
+-> description => Aplikacja desktopowa zbudowana z Silver
+-> author      => Bytes Developers
+-> license     => MIT
+
+[build]
+-> lang   => h#
+-> entry  => src/main.h#
+-> output => build/my-silver-app
+
+[deps]
+-> silver => git

@@ -1,0 +1,127 @@
+use "std -> fs"  from "fs"
+use "std -> env" from "env"
+use "std -> cli" from "cli"
+
+fn tpl_manifest(name: string) -> string is
+    return "! " + name + " — aplikacja Silver\n\n" +
+        "[package]\n" +
+        "-> name        => " + name + "\n" +
+        "-> version     => 0.1.0\n" +
+        "-> description => Aplikacja desktopowa zbudowana z Silver\n\n" +
+        "[build]\n" +
+        "-> lang   => h#\n" +
+        "-> entry  => src/main.h#\n" +
+        "-> output => build/" + name + "\n\n" +
+        "[deps]\n" +
+        "-> silver => git\n"
+end
+
+fn tpl_main(name: string) -> string is
+    return "use \"silver -> app\" from \"app\"\n\n" +
+        "fn greet(args_json: string) -> string is\n" +
+        "    write(\"greet() wywołane z frontendu\")\n" +
+        "    return \"{\\\"message\\\": \\\"Cześć z H#!\\\"}\"\n" +
+        "end\n\n" +
+        "fn main() is\n" +
+        "    let mut a = app::new(\"" + name + "\", 800, 600)\n" +
+        "    a = app::with_font(a, \"frontend/fonts/DejaVuSans.ttf\", 16)\n" +
+        "    a = app::load_html(a, \"frontend/index.html\")\n" +
+        "    a = app::load_css(a, \"frontend/style.css\")\n" +
+        "    a = app::command(a, \"greet\", greet)\n" +
+        "    app::run(a)\n" +
+        "end\n"
+end
+
+fn tpl_index_html() -> string is
+    return "<div class=\"page\">\n" +
+        "    <div class=\"card\">\n" +
+        "        <h1>Witaj w Silver</h1>\n" +
+        "        <p>Frontend: HTML/CSS. Backend: H#. Bez WebView.</p>\n" +
+        "        <div class=\"button\" id=\"greet-btn\" on-click=\"greet\">\n" +
+        "            <span>Kliknij mnie</span>\n" +
+        "        </div>\n" +
+        "    </div>\n" +
+        "</div>\n"
+end
+
+fn tpl_style_css() -> string is
+    return ".page {\n    background: #f2f2f5;\n    padding: 24px;\n}\n\n" +
+        ".card {\n    background: white;\n    padding: 20px;\n    border: 1px;\n    border-color: #dddddd;\n}\n\n" +
+        "h1 { color: #202020; font-size: 28px; }\n" +
+        "p  { color: #555555; font-size: 16px; }\n\n" +
+        ".button {\n    background: #3a5edc;\n    padding: 12px;\n}\n" +
+        ".button span { color: white; font-size: 16px; }\n"
+end
+
+fn tpl_app_js() -> string is
+    return "// Prawdziwy JS jest dostępny od Silver v0.2 (native/silver_quickjs_shim.c),\n" +
+        "// ale trzeba go jawnie włączyć w src/main.h#:\n" +
+        "//\n" +
+        "//   a = app::load_js(a, [\"<ścieżka-do-pakietu-silver>/src/js/silver_api.js\",\n" +
+        "//                        \"frontend/app.js\"])\n" +
+        "//\n" +
+        "// (dokładna ścieżka do zależności zależy od tego, gdzie `bytes add silver`\n" +
+        "// zwendorował pakiet — patrz build/cache/ po `bytes add silver`).\n" +
+        "// Domyślnie ten szablon używa prostszego on-click=\"...\" w HTML, bez JS.\n" +
+        "//\n" +
+        "// Docelowe API (już gotowe w silver_api.js):\n" +
+        "//   const res = await silver.invoke(\"greet\", {});\n" +
+        "//   silver.listen(\"some-event\", (payload) => { ... });\n"
+end
+
+fn tpl_gitignore() -> string is
+    return "build/\n*.so\n*.o\n"
+end
+
+pub fn cmd_new(name: string) -> int is
+    if name == "" is
+        write("użycie: silver new <nazwa>")
+        return 1
+    end
+    if fs::exists(name) is
+        write("błąd: katalog '" + name + "' już istnieje")
+        return 1
+    end
+
+    fs::mkdir(name)
+    fs::mkdir(name + "/src")
+    fs::mkdir(name + "/frontend")
+    fs::mkdir(name + "/frontend/fonts")
+    fs::mkdir(name + "/build")
+
+    fs::write(name + "/Bytes.hk", tpl_manifest(name))
+    fs::write(name + "/src/main.h#", tpl_main(name))
+    fs::write(name + "/frontend/index.html", tpl_index_html())
+    fs::write(name + "/frontend/style.css", tpl_style_css())
+    fs::write(name + "/frontend/app.js", tpl_app_js())
+    fs::write(name + "/.gitignore", tpl_gitignore())
+
+    write("Utworzono: " + name)
+    write("")
+    write("Uwaga: dołącz font .ttf do frontend/fonts/ (np. DejaVu Sans)")
+    write("       oraz zbuduj native/silver_shim.c -> libsilvershim.so")
+    write("       (patrz native/README.md w repo Silver).")
+    write("")
+    write("Dalej:")
+    write("  cd " + name)
+    write("  bytes add silver")
+    write("  bytes run")
+    return 0
+end
+
+pub fn main() is
+    let a: [string] = env::args()
+    if array_len(a) < 2 is
+        write("silver — CLI dla projektów Silver")
+        write("użycie:")
+        write("  silver new <nazwa>    utwórz nowy projekt z szablonu")
+        return
+    end
+    let sub: string = a[1]
+    if sub == "new" is
+        let name: string = if array_len(a) > 2 then a[2] else ""
+        cmd_new(name)
+    else is
+        write("nieznana komenda: " + sub)
+    end
+end

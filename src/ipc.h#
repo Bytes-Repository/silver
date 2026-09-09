@@ -1,0 +1,74 @@
+use "std -> json" from "json"
+
+pub enum Origin is
+    Both
+    HtmlOnly
+    JsOnly
+end
+
+pub struct Command is
+    pub name:    string
+    pub handler: fn(string) -> string   ;; (json args) -> (json result)
+    pub origin:  Origin
+end
+
+pub struct Router is
+    pub commands: [Command]
+end
+
+pub fn new_router() -> Router is
+    return Router { commands: [] }
+end
+
+pub fn register(router: Router, name: string, handler: fn(string) -> string) -> Router is
+    return register_scoped(router, name, handler, Origin::Both)
+end
+
+pub fn register_scoped(router: Router, name: string, handler: fn(string) -> string, origin: Origin) -> Router is
+    return Router { commands: array_push(router.commands, Command { name: name, handler: handler, origin: origin }) }
+end
+
+;; Zwraca JSON wynik komendy, albo `{"error": "..."}` gdy komenda nie
+;; istnieje LUB nie wolno jej wołać z danego pochodzenia (`caller`:
+;; "html" | "js").
+pub fn dispatch_from(router: Router, name: string, args_json: string, caller: string) -> string is
+    let count: int = array_len(router.commands)
+    let mut i: int = 0
+    while i < count is
+        let cmd: Command = router.commands[i]
+        i += 1
+        if cmd.name != name is continue end
+
+        let allowed: bool =
+            match cmd.origin is
+                Origin::Both     => true
+                Origin::HtmlOnly => caller == "html"
+                Origin::JsOnly   => caller == "js"
+            end
+        if !allowed is
+            let mut err: string = json::object()
+            err = json::set_str(err, "error", "command '" + name + "' not allowed from " + caller)
+            return err
+        end
+        return cmd.handler(args_json)
+    end
+    let mut err: string = json::object()
+    err = json::set_str(err, "error", "unknown command: " + name)
+    return err
+end
+
+;; Wygodny skrót dla wywołań, którym pochodzenie jest obojętne
+;; (wewnętrzne testy, on_tick itp.) — zawsze przechodzi jak "html".
+pub fn dispatch(router: Router, name: string, args_json: string) -> string is
+    return dispatch_from(router, name, args_json, "html")
+end
+
+pub fn has(router: Router, name: string) -> bool is
+    let count: int = array_len(router.commands)
+    let mut i: int = 0
+    while i < count is
+        if router.commands[i].name == name is return true end
+        i += 1
+    end
+    return false
+end

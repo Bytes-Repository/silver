@@ -1,0 +1,313 @@
+use "std -> conv" from "conv"
+
+pub enum JsonValue is
+    Null
+    Bool(bool)
+    Num(f64)
+    Str(string)
+    Arr([JsonValue])
+    Obj([JsonEntry])
+end
+
+pub struct JsonEntry is
+    pub key: string
+    pub val: JsonValue
+end
+
+struct ParseResult is
+    pub value: JsonValue
+    pub pos:   int
+end
+
+;; ---------- parsing ----------
+
+fn is_ws(c: string) -> bool is
+    return c == " " || c == "\n" || c == "\t" || c == "\r"
+end
+
+fn skip_ws(s: string, pos: int) -> int is
+    let n: int = string_len(s)
+    let mut p: int = pos
+    while p < n && is_ws(string_at(s, p)) is
+        p += 1
+    end
+    return p
+end
+
+fn is_digit(c: string) -> bool is
+    return c == "0" || c == "1" || c == "2" || c == "3" || c == "4" ||
+           c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+end
+
+fn parse_string_lit(s: string, pos: int) -> ParseResult is
+    ;; pos wskazuje na otwierający "
+    let n: int = string_len(s)
+    let mut p: int = pos + 1
+    let mut out: string = ""
+    while p < n && string_at(s, p) != "\"" is
+        let c: string = string_at(s, p)
+        if c == "\\" && p + 1 < n is
+            let esc: string = string_at(s, p + 1)
+            if esc == "n" is out = out + "\n"
+            elsif esc == "t" is out = out + "\t"
+            elsif esc == "r" is out = out + "\r"
+            elsif esc == "\"" is out = out + "\""
+            elsif esc == "\\" is out = out + "\\"
+            elsif esc == "/" is out = out + "/"
+            else is out = out + esc
+            end
+            p += 2
+        else is
+            out = out + c
+            p += 1
+        end
+    end
+    if p < n is p += 1 end   ;; zjedz zamykający "
+    return ParseResult { value: JsonValue::Str(out), pos: p }
+end
+
+fn parse_number_lit(s: string, pos: int) -> ParseResult is
+    let n: int = string_len(s)
+    let start: int = pos
+    let mut p: int = pos
+    if p < n && string_at(s, p) == "-" is p += 1 end
+    while p < n && (is_digit(string_at(s, p)) || string_at(s, p) == "." ||
+                    string_at(s, p) == "e" || string_at(s, p) == "E" ||
+                    string_at(s, p) == "+" || string_at(s, p) == "-") is
+        p += 1
+    end
+    let raw: string = string_slice(s, start, p)
+    return ParseResult { value: JsonValue::Num(conv::str_to_float(raw)), pos: p }
+end
+
+fn parse_array_lit(s: string, pos: int) -> ParseResult is
+    let n: int = string_len(s)
+    let mut p: int = skip_ws(s, pos + 1)   ;; zjedz [
+    let mut items: [JsonValue] = []
+    if p < n && string_at(s, p) == "]" is
+        return ParseResult { value: JsonValue::Arr(items), pos: p + 1 }
+    end
+    while p < n is
+        let r: ParseResult = parse_value(s, p)
+        items = array_push(items, r.value)
+        p = skip_ws(s, r.pos)
+        if p < n && string_at(s, p) == "," is
+            p = skip_ws(s, p + 1)
+            continue
+        end
+        if p < n && string_at(s, p) == "]" is
+            p += 1
+            break
+        end
+        break   ;; JSON niepoprawny — przerwij, zwróć to co udało się sparsować
+    end
+    return ParseResult { value: JsonValue::Arr(items), pos: p }
+end
+
+fn parse_object_lit(s: string, pos: int) -> ParseResult is
+    let n: int = string_len(s)
+    let mut p: int = skip_ws(s, pos + 1)   ;; zjedz {
+    let mut entries: [JsonEntry] = []
+    if p < n && string_at(s, p) == "}" is
+        return ParseResult { value: JsonValue::Obj(entries), pos: p + 1 }
+    end
+    while p < n is
+        p = skip_ws(s, p)
+        if p >= n || string_at(s, p) != "\"" is break end
+        let kr: ParseResult = parse_string_lit(s, p)
+        let key: string = as_str(kr.value)
+        p = skip_ws(s, kr.pos)
+        if p < n && string_at(s, p) == ":" is p = skip_ws(s, p + 1) end
+        let vr: ParseResult = parse_value(s, p)
+        entries = array_push(entries, JsonEntry { key: key, val: vr.value })
+        p = skip_ws(s, vr.pos)
+        if p < n && string_at(s, p) == "," is
+            p = skip_ws(s, p + 1)
+            continue
+        end
+        if p < n && string_at(s, p) == "}" is
+            p += 1
+            break
+        end
+        break
+    end
+    return ParseResult { value: JsonValue::Obj(entries), pos: p }
+end
+
+fn parse_value(s: string, pos: int) -> ParseResult is
+    let n: int = string_len(s)
+    let p: int = skip_ws(s, pos)
+    if p >= n is return ParseResult { value: JsonValue::Null, pos: p } end
+
+    let c: string = string_at(s, p)
+    if c == "\"" is return parse_string_lit(s, p) end
+    if c == "{" is return parse_object_lit(s, p) end
+    if c == "[" is return parse_array_lit(s, p) end
+    if c == "-" || is_digit(c) is return parse_number_lit(s, p) end
+    if string_slice(s, p, p + 4) == "true" is
+        return ParseResult { value: JsonValue::Bool(true), pos: p + 4 }
+    end
+    if string_slice(s, p, p + 5) == "false" is
+        return ParseResult { value: JsonValue::Bool(false), pos: p + 5 }
+    end
+    if string_slice(s, p, p + 4) == "null" is
+        return ParseResult { value: JsonValue::Null, pos: p + 4 }
+    end
+    return ParseResult { value: JsonValue::Null, pos: p + 1 }   ;; nierozpoznane — pomiń znak
+end
+
+pub fn parse(text: string) -> JsonValue is
+    let r: ParseResult = parse_value(text, 0)
+    return r.value
+end
+
+;; ---------- serializacja ----------
+
+fn escape_str(s: string) -> string is
+    let n: int = string_len(s)
+    let mut out: string = ""
+    let mut i: int = 0
+    while i < n is
+        let c: string = string_at(s, i)
+        i += 1
+        if c == "\"" is out = out + "\\\""
+        elsif c == "\\" is out = out + "\\\\"
+        elsif c == "\n" is out = out + "\\n"
+        elsif c == "\t" is out = out + "\\t"
+        else is out = out + c
+        end
+    end
+    return out
+end
+
+pub fn stringify(v: JsonValue) -> string is
+    match v is
+        JsonValue::Null     => return "null"
+        JsonValue::Bool(b)  => return if b then "true" else "false"
+        JsonValue::Num(n)   => return to_string(n)
+        JsonValue::Str(s)   => return "\"" + escape_str(s) + "\""
+        JsonValue::Arr(items) => is
+            let mut out: string = "["
+            let count: int = array_len(items)
+            let mut i: int = 0
+            while i < count is
+                if i > 0 is out = out + "," end
+                out = out + stringify(items[i])
+                i += 1
+            end
+            return out + "]"
+        end
+        JsonValue::Obj(entries) => is
+            let mut out: string = "{"
+            let count: int = array_len(entries)
+            let mut i: int = 0
+            while i < count is
+                if i > 0 is out = out + "," end
+                out = out + "\"" + escape_str(entries[i].key) + "\":" + stringify(entries[i].val)
+                i += 1
+            end
+            return out + "}"
+        end
+    end
+end
+
+;; ---------- akcesory ----------
+
+pub fn as_str(v: JsonValue) -> string is
+    match v is
+        JsonValue::Str(s) => return s
+        JsonValue::Num(n) => return to_string(n)
+        JsonValue::Bool(b) => return if b then "true" else "false"
+    end
+    return ""
+end
+
+pub fn as_num(v: JsonValue) -> f64 is
+    match v is
+        JsonValue::Num(n) => return n
+        JsonValue::Str(s) => return conv::str_to_float(s)
+    end
+    return 0.0
+end
+
+pub fn as_bool(v: JsonValue) -> bool is
+    match v is
+        JsonValue::Bool(b) => return b
+    end
+    return false
+end
+
+;; Zwraca wartość pod kluczem w obiekcie, albo Null jeśli brak/nie-obiekt.
+pub fn get(v: JsonValue, key: string) -> JsonValue is
+    match v is
+        JsonValue::Obj(entries) => is
+            let count: int = array_len(entries)
+            let mut i: int = 0
+            while i < count is
+                if entries[i].key == key is return entries[i].val end
+                i += 1
+            end
+        end
+    end
+    return JsonValue::Null
+end
+
+pub fn get_str(v: JsonValue, key: string) -> string is
+    return as_str(get(v, key))
+end
+
+pub fn arr_len(v: JsonValue) -> int is
+    match v is
+        JsonValue::Arr(items) => return array_len(items)
+    end
+    return 0
+end
+
+pub fn arr_get(v: JsonValue, i: int) -> JsonValue is
+    match v is
+        JsonValue::Arr(items) => is
+            if i < 0 || i >= array_len(items) is return JsonValue::Null end
+            return items[i]
+        end
+    end
+    return JsonValue::Null
+end
+
+;; ---------- budowanie ----------
+
+pub fn obj() -> JsonValue is
+    return JsonValue::Obj([])
+end
+
+;; Funkcyjne "ustawianie" klucza — nadpisuje jeśli już istnieje,
+;; dopisuje na końcu jeśli nie. Zwraca NOWY JsonValue (styl spójny z
+;; resztą silnika — patrz dom::apply_attr, css::matching_decls, itd).
+pub fn obj_set(o: JsonValue, key: string, val: JsonValue) -> JsonValue is
+    match o is
+        JsonValue::Obj(entries) => is
+            let mut out: [JsonEntry] = []
+            let count: int = array_len(entries)
+            let mut i: int = 0
+            let mut replaced: bool = false
+            while i < count is
+                if entries[i].key == key is
+                    out = array_push(out, JsonEntry { key: key, val: val })
+                    replaced = true
+                else is
+                    out = array_push(out, entries[i])
+                end
+                i += 1
+            end
+            if !replaced is
+                out = array_push(out, JsonEntry { key: key, val: val })
+            end
+            return JsonValue::Obj(out)
+        end
+    end
+    return JsonValue::Obj([JsonEntry { key: key, val: val }])
+end
+
+pub fn str(s: string) -> JsonValue is return JsonValue::Str(s) end
+pub fn num(n: f64) -> JsonValue is return JsonValue::Num(n) end
+pub fn boolean(b: bool) -> JsonValue is return JsonValue::Bool(b) end
+pub fn arr(items: [JsonValue]) -> JsonValue is return JsonValue::Arr(items) end

@@ -1,0 +1,133 @@
+pub struct CssDecl is
+    pub prop: string
+    pub val:  string
+end
+
+pub struct CssRule is
+    pub selector: string     ;; np. ".button", "#title", "p"
+    pub decls:    [CssDecl]
+end
+
+pub struct Stylesheet is
+    pub rules: [CssRule]
+end
+
+fn parse_decls(block: string) -> [CssDecl] is
+    let mut decls: [CssDecl] = []
+    let items: [string] = string_split(block, ";")
+    let count: int = array_len(items)
+    let mut i: int = 0
+    while i < count is
+        let raw: string = string_trim(items[i])
+        i += 1
+        if raw == "" is continue end
+        let colon: int = string_find(raw, ":")
+        if colon < 0 is continue end
+        let prop: string = string_trim(string_slice(raw, 0, colon))
+        let val:  string = string_trim(string_slice(raw, colon + 1, string_len(raw)))
+        if prop != "" is
+            decls = array_push(decls, CssDecl { prop: prop, val: val })
+        end
+    end
+    return decls
+end
+
+pub fn parse(css: string) -> Stylesheet is
+    let mut rules: [CssRule] = []
+    let n: int = string_len(css)
+    let mut p: int = 0
+    while p < n is
+        let open: int = find_char(css, "{", p)
+        if open < 0 is
+            p = n
+            continue
+        end
+        let selector: string = string_trim(string_slice(css, p, open))
+        let close: int = find_char(css, "}", open)
+        if close < 0 is
+            p = n
+            continue
+        end
+        let block: string = string_slice(css, open + 1, close)
+        if selector != "" is
+            rules = array_push(rules, CssRule { selector: selector, decls: parse_decls(block) })
+        end
+        p = close + 1
+    end
+    return Stylesheet { rules: rules }
+end
+
+fn find_char(s: string, ch: string, from: int) -> int is
+    if from >= string_len(s) is return -1 end
+    let idx: int = string_find(string_slice(s, from, string_len(s)), ch)
+    if idx < 0 is return -1 end
+    return idx + from
+end
+
+;; Czy selektor pasuje do węzła o danym tagu/id/klasach.
+;; `classes` to lista klas węzła (attr_class rozbite spacją).
+pub fn selector_matches(selector: string, tag: string, id: string, classes: [string]) -> bool is
+    if string_starts_with(selector, "#") is
+        return string_slice(selector, 1, string_len(selector)) == id
+    end
+    if string_starts_with(selector, ".") is
+        let want: string = string_slice(selector, 1, string_len(selector))
+        let count: int = array_len(classes)
+        let mut i: int = 0
+        while i < count is
+            if classes[i] == want is return true end
+            i += 1
+        end
+        return false
+    end
+    return selector == tag
+end
+
+;; Specyficzność do sortowania kaskady: id=3, class=2, tag=1.
+pub fn specificity(selector: string) -> int is
+    if string_starts_with(selector, "#") is return 3 end
+    if string_starts_with(selector, ".") is return 2 end
+    return 1
+end
+
+;; Zwraca deklaracje pasujące do węzła, posortowane od najmniej do
+;; najbardziej specyficznych (żeby ostatnia wygrywała przy nadpisywaniu
+;; w style::resolve — prosta kaskada bez !important).
+pub fn matching_decls(sheet: Stylesheet, tag: string, id: string, classes: [string]) -> [CssDecl] is
+    let mut low:  [CssDecl] = []
+    let mut mid:  [CssDecl] = []
+    let mut high: [CssDecl] = []
+    let count: int = array_len(sheet.rules)
+    let mut i: int = 0
+    while i < count is
+        let rule: CssRule = sheet.rules[i]
+        i += 1
+        if !selector_matches(rule.selector, tag, id, classes) is continue end
+        let spec: int = specificity(rule.selector)
+        let mut j: int = 0
+        let dc: int = array_len(rule.decls)
+        while j < dc is
+            if spec == 1 is low  = array_push(low,  rule.decls[j])
+            elsif spec == 2 is mid  = array_push(mid,  rule.decls[j])
+            else is high = array_push(high, rule.decls[j]) end
+            j += 1
+        end
+    end
+    let mut result: [CssDecl] = []
+    let mut k: int = 0
+    while k < array_len(low) is
+        result = array_push(result, low[k])
+        k += 1
+    end
+    k = 0
+    while k < array_len(mid) is
+        result = array_push(result, mid[k])
+        k += 1
+    end
+    k = 0
+    while k < array_len(high) is
+        result = array_push(result, high[k])
+        k += 1
+    end
+    return result
+end

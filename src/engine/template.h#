@@ -1,0 +1,53 @@
+use "silver -> engine -> dom" from "dom"
+use "std -> json" from "json"
+
+fn substitute(text: string, store: string) -> string is
+    let n: int = string_len(text)
+    let mut out: string = ""
+    let mut p: int = 0
+    while p < n is
+        if p + 1 < n && string_slice(text, p, p + 2) == "{{" is
+            let close: int = find_from(text, "}}", p + 2)
+            if close < 0 is
+                out = out + string_slice(text, p, n)
+                p = n
+            else is
+                let key: string = string_trim(string_slice(text, p + 2, close))
+                let val: string = json::get_str(store, key)
+                out = out + val
+                p = close + 2
+            end
+        else is
+            out = out + string_slice(text, p, p + 1)
+            p += 1
+        end
+    end
+    return out
+end
+
+fn find_from(s: string, needle: string, from: int) -> int is
+    if from >= string_len(s) is return -1 end
+    let idx: int = string_find(string_slice(s, from, string_len(s)), needle)
+    if idx < 0 is return -1 end
+    return idx + from
+end
+
+;; Zwraca NOWY Dom z podmienionymi placeholderami we wszystkich węzłach
+;; tekstowych. Wołaj raz na klatkę w app::frame, tuż przed layout::layout.
+pub fn apply_state(dom: dom::Dom, store: string) -> dom::Dom is
+    let mut out_nodes: [dom::DomNode] = []
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        let n: dom::DomNode = dom.nodes[i]
+        i += 1
+        if n.tag == "text" && string_find(n.text, "{{") >= 0 is
+            let mut nn: dom::DomNode = n
+            nn.text = substitute(n.text, store)
+            out_nodes = array_push(out_nodes, nn)
+        else is
+            out_nodes = array_push(out_nodes, n)
+        end
+    end
+    return dom::Dom { nodes: out_nodes }
+end

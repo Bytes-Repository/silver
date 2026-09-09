@@ -1,0 +1,368 @@
+use "silver -> window"           from "window"
+use "silver -> ffi_shim"           from "ffi"
+use "silver -> ipc"                  from "ipc"
+use "silver -> js -> js_bridge"        from "js"
+use "silver -> engine -> dom"        from "dom"
+use "silver -> engine -> css"         from "css"
+use "silver -> engine -> layout"       from "layout"
+use "silver -> engine -> paint"         from "paint"
+use "silver -> engine -> template"       from "template"
+use "silver -> engine -> json"           from "ejson"
+use "std -> fs"                          from "fs"
+use "std -> log"                          from "log"
+use "std -> json"                          from "json"
+
+;; kod klawisza Backspace w SDL (SDLK_BACKSPACE) — potrzebny do edycji
+;; <input>, patrz native/silver_shim.c (event KEY_DOWN przekazuje
+;; e.key.keysym.sym wprost).
+fn key_backspace() -> int is return 8 end
+
+pub struct App is
+    pub win:      window::Window
+    pub dom:      dom::Dom
+    pub sheet:    css::Stylesheet
+    pub router:   ipc::Router
+    pub font_path: string
+    pub font_size: int
+    pub store:    string    ;; płaski JSON stanu, patrz engine/template.h# ({{klucz}})
+    pub js_handle: int       ;; -1 = brak JS (tylko on-click w HTML), >=0 = kontekst QuickJS
+
+    pub scroll_y:      int              ;; offset przewijania strony w px
+    pub input_values:  ejson::JsonValue   ;; { attr_id: aktualna wartość <input> }
+    pub focused_input: string              ;; attr_id focusowanego <input>, "" = brak
+
+    pub html_path: string   ;; zapamiętane ścieżki (do hot reload) — "" jeśli load_html_str użyty
+    pub css_path:  string
+    pub dev_mode:  bool
+    pub last_html_mtime: int
+    pub last_css_mtime:  int
+
+    ;; Wołane raz na klatkę, przed przemalowaniem, zaraz po obsłużeniu
+    ;; ewentualnego zdarzenia. Miejsce, gdzie synchronizujesz zewnętrzny
+    ;; stan (np. licznik w std -> sync atomic) przez app::set_state.
+    pub on_tick:  fn(App) -> App
+end
+
+fn identity_tick(a: App) -> App is
+    return a
+end
+
+;; Wynik jednego przejścia layout+paint — żeby nie liczyć layoutu
+;; osobno do hit-testu i osobno do malowania (naprawiony błąd z v0.1/v0.2).
+struct RenderPass is
+    pub rendered_dom: dom::Dom
+    pub boxes:         [layout::LayoutBox]
+end
+
+pub fn new(title: string, width: int, height: int) -> App is
+    let win: window::Window = window::create(title, width, height)
+    return App {
+        win: win,
+        dom: dom::Dom { nodes: [] },
+        sheet: css::Stylesheet { rules: [] },
+        router: ipc::new_router(),
+        font_path: "",
+        font_size: 16,
+        store: json::object(),
+        js_handle: -1,
+        scroll_y: 0,
+        input_values: ejson::obj(),
+        focused_input: "",
+        html_path: "", css_path: "", dev_mode: false,
+        last_html_mtime: 0, last_css_mtime: 0,
+        on_tick: identity_tick
+    }
+end
+
+pub fn on_tick(app: App, hook: fn(App) -> App) -> App is
+    let mut a: App = app
+    a.on_tick = hook
+    return a
+end
+
+;; Ustawia jeden klucz w płaskim stanie aplikacji — dowolny tekst w
+;; HTML zawierający `{{klucz}}` pokaże tę wartość od następnej klatki.
+pub fn set_state(app: App, key: string, val: string) -> App is
+    let mut a: App = app
+    a.store = json::set_str(a.store, key, val)
+    return a
+end
+
+pub fn state(app: App, key: string) -> string is
+    return json::get_str(app.store, key)
+end
+
+;; Aktualna wartość edytowalnego <input id="...">. Zwraca "" jeśli
+;; użytkownik jeszcze nic nie wpisał (patrz value="..." w HTML dla
+;; wartości początkowej — ta funkcja pokazuje tylko to, co user
+;; NAPISAŁ od uruchomienia; wartość początkowa jest w dom po stronie
+;; paint.h# jako fallback wyświetlania, nie tutaj).
+pub fn input_value(app: App, input_id: string) -> string is
+    return ejson::get_str(app.input_values, input_id)
+end
+
+pub fn with_font(app: App, ttf_path: string, size: int) -> App is
+    let mut a: App = app
+    a.font_path = ttf_path
+    a.font_size = size
+    window::load_font(a.win, ttf_path, size)
+    return a
+end
+
+pub fn load_html(app: App, path: string) -> App is
+    let mut a: App = app
+    a.dom = dom::parse(fs::read(path))
+    a.html_path = path
+    a.last_html_mtime = fs::modified_time(path)
+    return a
+end
+
+pub fn load_html_str(app: App, html: string) -> App is
+    let mut a: App = app
+    a.dom = dom::parse(html)
+    a.html_path = ""
+    return a
+end
+
+pub fn load_css(app: App, path: string) -> App is
+    let mut a: App = app
+    a.sheet = css::parse(fs::read(path))
+    a.css_path = path
+    a.last_css_mtime = fs::modified_time(path)
+    return a
+end
+
+pub fn load_css_str(app: App, css_text: string) -> App is
+    let mut a: App = app
+    a.sheet = css::parse(css_text)
+    a.css_path = ""
+    return a
+end
+
+;; Włącza hot reload: gdy `html_path`/`css_path` (z app::load_html/
+;; load_css — trzeba więc użyć wariantu ścieżkowego, nie *_str) zmienią
+;; się na dysku, `run()` przeładuje je automatycznie w ciągu ~0.5s, bez
+;; restartu aplikacji. Tylko frontend (HTML/CSS) — zmiana w kodzie H#
+;; nadal wymaga ponownego `bytes run`.
+pub fn enable_hot_reload(app: App) -> App is
+    let mut a: App = app
+    a.dev_mode = true
+    return a
+end
+
+;; Rejestruje komendę wołaną z `on-click="nazwa"` w HTML LUB z
+;; `silver.invoke("nazwa", args)` w JS.
+pub fn command(app: App, name: string, handler: fn(string) -> string) -> App is
+    let mut a: App = app
+    a.router = ipc::register(a.router, name, handler)
+    return a
+end
+
+;; Jak `command`, ale komenda odrzuci wywołania z JS — dla logiki
+;; wołanej tylko z zaufanego on-click w HTML aplikacji.
+pub fn command_html_only(app: App, name: string, handler: fn(string) -> string) -> App is
+    let mut a: App = app
+    a.router = ipc::register_scoped(a.router, name, handler, ipc::Origin::HtmlOnly)
+    return a
+end
+
+;; Jak `command`, ale odrzuci wywołania z on-click w HTML — dla logiki,
+;; którą powinien wywoływać tylko frontend JS.
+pub fn command_js_only(app: App, name: string, handler: fn(string) -> string) -> App is
+    let mut a: App = app
+    a.router = ipc::register_scoped(a.router, name, handler, ipc::Origin::JsOnly)
+    return a
+end
+
+pub fn load_js(app: App, files: [string]) -> App is
+    let mut a: App = app
+    a.js_handle = js::js_init(a.win.handle)
+    if a.js_handle < 0 is
+        log::warn("Silver: nie udało się zainicjować QuickJS (libsilverjs.so?) — silver.invoke() z JS nie zadziała")
+        return a
+    end
+    let count: int = array_len(files)
+    let mut i: int = 0
+    while i < count is
+        let ok: bool = js::js_load_file(a.js_handle, files[i])
+        if !ok is
+            log::warn("Silver: błąd ładowania " + files[i] + " (patrz stderr shimu QuickJS)")
+        end
+        i += 1
+    end
+    return a
+end
+
+;; Wysyła zdarzenie do wszystkich `silver.listen("nazwa", cb)` w JS.
+pub fn emit(app: App, event_name: string, payload_json: string) is
+    if app.js_handle < 0 is return end
+    js::js_emit(app.js_handle, event_name, payload_json)
+end
+
+struct DrainResult is
+    pub app:     App
+    pub handled: bool
+end
+
+fn drain_js_invokes(app: App) -> DrainResult is
+    let mut a: App = app
+    let mut handled: bool = false
+    if a.js_handle < 0 is return DrainResult { app: a, handled: false } end
+    let mut go: bool = true
+    while go is
+        let msg: string = js::js_poll_invoke(a.js_handle)
+        if msg == "" is
+            go = false
+        else is
+            let parts: [string] = string_split(msg, "\u0001")
+            if array_len(parts) >= 3 is
+                let call_id: string = parts[0]
+                let cmd: string = parts[1]
+                let args_json: string = parts[2]
+                let result: string = ipc::dispatch_from(a.router, cmd, args_json, "js")
+                js::js_resolve(a.js_handle, call_id, result)
+                log::debug("Silver(JS): komenda '" + cmd + "' -> " + result)
+                handled = true
+            end
+        end
+    end
+    return DrainResult { app: a, handled: handled }
+end
+
+fn compute(app: App) -> RenderPass is
+    let w: int = window::ffi_width(app.win)
+    let rendered_dom: dom::Dom = template::apply_state(app.dom, app.store)
+    let boxes: [layout::LayoutBox] = layout::layout(rendered_dom, app.sheet, w, app.win.handle)
+    return RenderPass { rendered_dom: rendered_dom, boxes: boxes }
+end
+
+fn paint_pass(app: App, pass: RenderPass) is
+    paint::render(app.win.handle, pass.boxes, pass.rendered_dom,
+        app.scroll_y, app.input_values, app.focused_input)
+end
+
+;; Sprawdza mtime html/css (tylko gdy dev_mode i ścieżkowe load_*) i
+;; przeładowuje, jeśli plik zmienił się na dysku. Wołane co ~30 klatek
+;; w run() (nie co klatkę — fs::modified_time to syscall).
+fn check_hot_reload(app: App) -> App is
+    let mut a: App = app
+    if !a.dev_mode is return a end
+
+    if a.html_path != "" is
+        let m: int = fs::modified_time(a.html_path)
+        if m != a.last_html_mtime is
+            a.dom = dom::parse(fs::read(a.html_path))
+            a.last_html_mtime = m
+            log::info("Silver: przeładowano " + a.html_path)
+        end
+    end
+    if a.css_path != "" is
+        let m: int = fs::modified_time(a.css_path)
+        if m != a.last_css_mtime is
+            a.sheet = css::parse(fs::read(a.css_path))
+            a.last_css_mtime = m
+            log::info("Silver: przeładowano " + a.css_path)
+        end
+    end
+    return a
+end
+
+fn handle_click(app: App, pass: RenderPass, x: int, y: int) -> App is
+    let mut a: App = app
+    let content_y: int = y + a.scroll_y   ;; ekran -> współrzędne treści (patrz paint.h#)
+
+    let input_id: string = paint::hit_test_input(pass.boxes, pass.rendered_dom, x, content_y)
+    if input_id != "" is
+        a.focused_input = input_id
+        window::start_text_input(a.win)
+        return a
+    end
+    if a.focused_input != "" is
+        a.focused_input = ""
+        window::stop_text_input(a.win)
+    end
+
+    let hit: int = paint::hit_test(pass.boxes, pass.rendered_dom, x, content_y)
+    if hit >= 0 is
+        let handler_name: string = pass.rendered_dom.nodes[hit].on_click
+        if ipc::has(a.router, handler_name) is
+            let result: string = ipc::dispatch_from(a.router, handler_name, "{}", "html")
+            log::debug("Silver: komenda '" + handler_name + "' -> " + result)
+        end
+    end
+    return a
+end
+
+pub fn run(app: App) is
+    let mut a: App = app
+    log::info("Silver: uruchamianie " + a.win.title + " (" +
+        to_string(a.win.width) + "x" + to_string(a.win.height) + ")")
+
+    let mut frame_count: int = 0
+    let mut pass: RenderPass = compute(a)
+    paint_pass(a, pass)
+
+    while window::is_open(a.win) is
+        let ev: window::InputEvent = window::poll(a.win)
+        let mut dirty: bool = false
+
+        if ev.kind == "quit" is
+            break
+        elsif ev.kind == "mouse_down" is
+            a = handle_click(a, pass, ev.x, ev.y)
+            a = a.on_tick(a)
+            dirty = true
+        elsif ev.kind == "text" && a.focused_input != "" is
+            let cur: string = ejson::get_str(a.input_values, a.focused_input)
+            a.input_values = ejson::obj_set(a.input_values, a.focused_input, ejson::str(cur + ev.text))
+            dirty = true
+        elsif ev.kind == "key_down" && a.focused_input != "" && ev.code == key_backspace() is
+            let cur: string = ejson::get_str(a.input_values, a.focused_input)
+            if string_len(cur) > 0 is
+                let trimmed: string = string_slice(cur, 0, string_len(cur) - 1)
+                a.input_values = ejson::obj_set(a.input_values, a.focused_input, ejson::str(trimmed))
+                dirty = true
+            end
+        elsif ev.kind == "scroll" is
+            a.scroll_y = a.scroll_y - ev.y
+            if a.scroll_y < 0 is a.scroll_y = 0 end
+            dirty = true
+        elsif ev.kind == "resize" is
+            emit(a, "silver://resize", "{\"width\": \"" + to_string(ev.x) + "\", \"height\": \"" + to_string(ev.y) + "\"}")
+            dirty = true
+        elsif ev.kind == "focus_gained" is
+            emit(a, "silver://focus", "{}")
+        elsif ev.kind == "focus_lost" is
+            emit(a, "silver://blur", "{}")
+        end
+
+        let dr: DrainResult = drain_js_invokes(a)
+        a = dr.app
+        if dr.handled is
+            a = a.on_tick(a)
+            dirty = true
+        end
+
+        frame_count += 1
+        if a.dev_mode && frame_count % 30 == 0 is
+            let before_html: int = a.last_html_mtime
+            let before_css: int = a.last_css_mtime
+            a = check_hot_reload(a)
+            if a.last_html_mtime != before_html || a.last_css_mtime != before_css is
+                dirty = true
+            end
+        end
+
+        if dirty is
+            pass = compute(a)
+            paint_pass(a, pass)
+        end
+
+        ffi::silver_delay(16)
+    end
+
+    if a.js_handle >= 0 is
+        js::js_shutdown(a.js_handle)
+    end
+    window::close(a.win)
+end

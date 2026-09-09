@@ -1,0 +1,32 @@
+use "silver -> ffi_dialogs" from "ffi_dialogs"
+
+;; Zwraca wybraną ścieżkę pliku, albo "" jeśli użytkownik anulował.
+;; `filter_pattern` np. "*.png;*.jpg" (puste = wszystkie pliki).
+pub fn open_file(title: string, filter_desc: string, filter_pattern: string) -> string is
+    return ffi_dialogs::silver_dialog_open_file(title, filter_desc, filter_pattern)
+end
+
+pub fn save_file(title: string, default_name: string) -> string is
+    return ffi_dialogs::silver_dialog_save_file(title, default_name)
+end
+
+pub fn open_folder(title: string) -> string is
+    return ffi_dialogs::silver_dialog_open_folder(title)
+end
+
+pub fn info(title: string, text: string) is
+    ffi_dialogs::silver_dialog_message(title, text, "info")
+end
+
+pub fn warning(title: string, text: string) is
+    ffi_dialogs::silver_dialog_message(title, text, "warning")
+end
+
+pub fn error(title: string, text: string) is
+    ffi_dialogs::silver_dialog_message(title, text, "error")
+end
+
+;; Zwraca true = użytkownik wybrał "Tak"/OK, false = "Nie"/Anuluj.
+pub fn confirm(title: string, text: string) -> bool is
+    return ffi_dialogs::silver_dialog_message(title, text, "question")
+end

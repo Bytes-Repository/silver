@@ -1,0 +1,14 @@
+# app.desktop.template — szablon wpisu .desktop dla aplikacji Silver
+# (Linux — menu aplikacji, ikona, uruchamianie z GUI).
+#
+# Podmień {{NAME}}/{{EXEC}}/{{ICON}} i zapisz jako
+# /usr/share/applications/{{name}}.desktop (albo dołącz do AppImage/.deb).
+
+[Desktop Entry]
+Type=Application
+Name={{NAME}}
+Comment=Aplikacja Silver
+Exec={{EXEC}}
+Icon={{ICON}}
+Terminal=false
+Categories=Utility;

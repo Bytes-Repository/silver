@@ -1,0 +1,8 @@
+extern dynamic [c, "silverjs"] is
+    fn js_init(win_handle: int) -> int              ;; -> kontekst JS (uchwyt) albo -1
+    fn js_load_file(js_handle: int, path: string) -> bool
+    fn js_poll_invoke(js_handle: int) -> string       ;; "" | "call_id\u0001cmd\u0001json"
+    fn js_resolve(js_handle: int, call_id: string, result_json: string) -> bool
+    fn js_emit(js_handle: int, event_name: string, payload_json: string) -> bool
+    fn js_shutdown(js_handle: int) -> bool
+end

@@ -1,0 +1,13 @@
+[package]
+-> name        => silver-counter
+-> version     => 0.1.0
+-> description => Przykład Silver — licznik
+-> license     => MIT
+
+[build]
+-> lang   => h#
+-> entry  => src/main.h#
+-> output => build/silver-counter
+
+[deps]
+-> silver => git

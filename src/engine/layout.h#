@@ -1,0 +1,317 @@
+use "silver -> ffi_shim"      from "ffi"
+use "silver -> engine -> dom"     from "dom"
+use "silver -> engine -> css"      from "css"
+use "silver -> engine -> style"     from "style"
+
+pub struct LayoutBox is
+    pub node_id: int
+    pub x: int
+    pub y: int
+    pub w: int
+    pub h: int
+    pub st:      style::ComputedStyle
+    pub text:    string   ;; niepuste = rysuj tekst (liść inline)
+    pub img_src: string    ;; niepuste = rysuj obrazek (liść <img>)
+end
+
+pub struct LayoutResult is
+    pub boxes:  [LayoutBox]
+    pub height: int
+end
+
+;; ---------- pomiar tekstu ----------
+
+fn est_text_width(text: string, font_size: int) -> int is
+    return string_len(text) * font_size * 58 / 100
+end
+
+;; `win_handle >= 0` -> realny pomiar przez zainicjowany font w oknie.
+;; `win_handle == -1` -> szacowanie (np. testy jednostkowe bez SDL).
+fn measure_text(win_handle: int, text: string, font_size: int) -> int is
+    if win_handle < 0 is return est_text_width(text, font_size) end
+    let w: int = ffi::silver_measure_text(win_handle, text)
+    if w <= 0 is return est_text_width(text, font_size) end
+    return w
+end
+
+fn node_style(dom: dom::Dom, sheet: css::Stylesheet, node_id: int, inherited: style::ComputedStyle) -> style::ComputedStyle is
+    let n: dom::DomNode = dom.nodes[node_id]
+    let classes: [string] = style::split_classes(n.attr_class)
+    return style::resolve(sheet, n.tag, n.attr_id, classes, inherited)
+end
+
+fn collect_text(dom: dom::Dom, node_id: int) -> string is
+    let n: dom::DomNode = dom.nodes[node_id]
+    if n.tag == "text" is return n.text end
+    let mut out: string = ""
+    let count: int = array_len(n.children)
+    let mut i: int = 0
+    while i < count is
+        let child_text: string = collect_text(dom, n.children[i])
+        i += 1
+        if child_text == "" is continue end
+        if out != "" is out = out + " " end
+        out = out + child_text
+    end
+    return out
+end
+
+fn is_inline(dom: dom::Dom, sheet: css::Stylesheet, node_id: int, inherited: style::ComputedStyle) -> bool is
+    return node_style(dom, sheet, node_id, inherited).display == "inline"
+end
+
+;; Rozmiar <img>: jawny CSS wygrywa; inaczej naturalny rozmiar pliku
+;; (przez FFI, jeśli mamy okno); inaczej 100x100.
+fn image_size(win_handle: int, path: string, st: style::ComputedStyle) -> LayoutBox is
+    let mut w: int = st.width
+    let mut h: int = st.height
+    if (w < 0 || h < 0) && win_handle >= 0 is
+        let nat_w: int = ffi::silver_image_width(win_handle, path)
+        let nat_h: int = ffi::silver_image_height(win_handle, path)
+        if w < 0 is w = if nat_w > 0 then nat_w else 100 end
+        if h < 0 is h = if nat_h > 0 then nat_h else 100 end
+    else is
+        if w < 0 is w = 100 end
+        if h < 0 is h = 100 end
+    end
+    return LayoutBox { node_id: -1, x: 0, y: 0, w: w, h: h, st: st, text: "", img_src: path }
+end
+
+;; ---------- inline flow (text/span/a w bloku non-flex) ----------
+
+fn flow_inline_run(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, run: [int],
+                    inner_x: int, start_y: int, inner_w: int,
+                    inherited: style::ComputedStyle, boxes: [LayoutBox]) -> LayoutResult is
+    let mut acc: [LayoutBox] = boxes
+    let mut line_x: int = 0
+    let mut line_y: int = start_y
+    let mut line_max_h: int = 0
+    let gap: int = 6
+
+    let count: int = array_len(run)
+    let mut i: int = 0
+    while i < count is
+        let node_id: int = run[i]
+        i += 1
+        let st: style::ComputedStyle = node_style(dom, sheet, node_id, inherited)
+        let text: string = collect_text(dom, node_id)
+        if text == "" is continue end
+
+        let w: int = measure_text(win_handle, text, st.font_size)
+        let h: int = st.font_size + 6
+
+        if line_x > 0 && line_x + w > inner_w is
+            line_y = line_y + line_max_h
+            line_x = 0
+            line_max_h = 0
+        end
+
+        let b: LayoutBox = LayoutBox {
+            node_id: node_id, x: inner_x + line_x, y: line_y, w: w, h: h,
+            st: st, text: text, img_src: ""
+        }
+        acc = array_push(acc, b)
+
+        line_x = line_x + w + gap
+        if h > line_max_h is line_max_h = h end
+    end
+
+    let total_h: int = (line_y - start_y) + line_max_h
+    return LayoutResult { boxes: acc, height: total_h }
+end
+
+;; ---------- flex (display: flex) ----------
+
+;; Zwraca "rozmiar w kierunku głównej osi" dziecka, jeśli jawnie
+;; ustawiony w CSS, inaczej -1 (auto -> dostanie równy udział miejsca).
+fn explicit_main_size(st: style::ComputedStyle, row: bool) -> int is
+    return if row then st.width else st.height
+end
+
+fn layout_flex(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: int,
+               x: int, y: int, st: style::ComputedStyle,
+               inner_x: int, inner_y: int, inner_w: int,
+               boxes: [LayoutBox]) -> LayoutResult is
+    let n: dom::DomNode = dom.nodes[node_id]
+    let row: bool = st.flex_dir != "column"
+    let main_avail: int = if row then inner_w else 1000000  ;; kolumna: brak twardego limitu wysokości
+
+    let ids: [int] = n.children
+    let count: int = array_len(ids)
+
+    ;; pass 1: policz jawne rozmiary głównej osi i ile dzieci jest "auto"
+    let mut sum_explicit: int = 0
+    let mut auto_count: int = 0
+    let mut i: int = 0
+    while i < count is
+        let cst: style::ComputedStyle = node_style(dom, sheet, ids[i], st)
+        let m: int = explicit_main_size(cst, row)
+        if m >= 0 is sum_explicit = sum_explicit + m else is auto_count += 1 end
+        i += 1
+    end
+    let gaps_total: int = if count > 1 then st.gap * (count - 1) else 0
+    let remaining: int = main_avail - sum_explicit - gaps_total
+    let per_auto: int = if auto_count > 0 && row then (if remaining > 0 then remaining / auto_count else 40) else -1
+
+    ;; pass 2: całkowity rozmiar użyty na głównej osi (do justify-content)
+    let mut total_main: int = gaps_total
+    i = 0
+    while i < count is
+        let cst: style::ComputedStyle = node_style(dom, sheet, ids[i], st)
+        let m: int = explicit_main_size(cst, row)
+        total_main = total_main + (if m >= 0 then m elsif row then per_auto else 0)
+        i += 1
+    end
+
+    let mut cursor: int = 0
+    let mut extra_gap: int = 0
+    if row is
+        let free: int = inner_w - total_main
+        if st.justify == "center" is cursor = free / 2
+        elsif st.justify == "flex-end" is cursor = free
+        elsif st.justify == "space-between" && count > 1 is extra_gap = free / (count - 1)
+        end
+    end
+
+    let mut acc: [LayoutBox] = boxes
+    let mut max_cross: int = 0
+    i = 0
+    while i < count is
+        let child_id: int = ids[i]
+        let cst: style::ComputedStyle = node_style(dom, sheet, child_id, st)
+        let explicit: int = explicit_main_size(cst, row)
+        let assigned_main: int = if explicit >= 0 then explicit elsif row then per_auto else -1
+
+        let before_len: int = array_len(acc)
+        let child_x: int = if row then inner_x + cursor else inner_x
+        let child_y: int = if row then inner_y else inner_y + cursor
+        let child_w: int = if row then assigned_main else inner_w
+        let res: LayoutResult = layout_node(win_handle, dom, sheet, child_id, child_x, child_y, child_w, st, acc)
+        acc = res.boxes
+
+        ;; cross-axis align: przesuń pudełka tego dziecka (dodane w tej
+        ;; iteracji, [before_len..len)) o dx wg align-items (tylko dla
+        ;; kolumny — align w wierszu wymagałby znanej z góry wysokości
+        ;; kontenera, co w v0.3 pomijamy jako uproszczenie).
+        if array_len(acc) > before_len is
+            let self_box: LayoutBox = acc[array_len(acc) - 1]  ;; self_box dziecka jest ostatnie (post-order)
+            if row is
+                if self_box.h > max_cross is max_cross = self_box.h end
+            else is
+                let cw: int = self_box.w
+                if cw > max_cross is max_cross = cw end
+                let dx: int = if st.align == "center" then (inner_w - cw) / 2
+                              elsif st.align == "flex-end" then inner_w - cw
+                              else 0
+                if dx != 0 is
+                    let mut j: int = before_len
+                    while j < array_len(acc) is
+                        acc[j].x = acc[j].x + dx
+                        j += 1
+                    end
+                end
+            end
+        end
+
+        cursor = cursor + (if row then assigned_main else res.height) + st.gap + extra_gap
+        i += 1
+    end
+
+    let total_h: int = if row then max_cross else cursor - st.gap - extra_gap
+    return LayoutResult { boxes: acc, height: if total_h > 0 then total_h else 0 }
+end
+
+;; ---------- główny layout węzła ----------
+
+fn layout_node(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: int,
+               x: int, y: int, avail_w: int, inherited: style::ComputedStyle,
+               boxes: [LayoutBox]) -> LayoutResult is
+    let n: dom::DomNode = dom.nodes[node_id]
+
+    if n.tag == "text" is
+        return flow_inline_run(win_handle, dom, sheet, [node_id], x, y, avail_w, inherited, boxes)
+    end
+
+    let st: style::ComputedStyle = node_style(dom, sheet, node_id, inherited)
+    if st.display == "none" is
+        return LayoutResult { boxes: boxes, height: 0 }
+    end
+
+    let box_w: int = if st.width >= 0 then st.width else avail_w
+
+    if n.tag == "img" is
+        let img: LayoutBox = image_size(win_handle, n.attr_src, st)
+        let placed: LayoutBox = LayoutBox {
+            node_id: node_id, x: x + st.margin, y: y + st.margin,
+            w: img.w, h: img.h, st: st, text: "", img_src: n.attr_src
+        }
+        let acc: [LayoutBox] = array_push(boxes, placed)
+        return LayoutResult { boxes: acc, height: placed.h + (st.margin * 2) }
+    end
+
+    let inner_w: int = box_w - (st.padding * 2)
+    let inner_x: int = x + st.margin + st.padding
+    let inner_y_start: int = y + st.margin + st.padding
+
+    let mut content_res: LayoutResult = LayoutResult { boxes: boxes, height: 0 }
+
+    if st.display == "flex" is
+        content_res = layout_flex(win_handle, dom, sheet, node_id, x, y, st, inner_x, inner_y_start, inner_w, boxes)
+    else is
+        let mut acc: [LayoutBox] = boxes
+        let mut cursor_y: int = inner_y_start
+        let mut run: [int] = []
+
+        let count: int = array_len(n.children)
+        let mut i: int = 0
+        while i < count is
+            let child_id: int = n.children[i]
+            i += 1
+
+            if is_inline(dom, sheet, child_id, st) is
+                run = array_push(run, child_id)
+                continue
+            end
+
+            if array_len(run) > 0 is
+                let rres: LayoutResult = flow_inline_run(win_handle, dom, sheet, run, inner_x, cursor_y, inner_w, st, acc)
+                acc = rres.boxes
+                cursor_y = cursor_y + rres.height
+                run = []
+            end
+
+            let res: LayoutResult = layout_node(win_handle, dom, sheet, child_id, inner_x, cursor_y, inner_w, st, acc)
+            acc = res.boxes
+            cursor_y = cursor_y + res.height
+        end
+
+        if array_len(run) > 0 is
+            let rres: LayoutResult = flow_inline_run(win_handle, dom, sheet, run, inner_x, cursor_y, inner_w, st, acc)
+            acc = rres.boxes
+            cursor_y = cursor_y + rres.height
+        end
+
+        content_res = LayoutResult { boxes: acc, height: cursor_y - inner_y_start }
+    end
+
+    let content_h: int = content_res.height
+    let box_h: int = if st.height >= 0 then st.height else content_h + (st.padding * 2)
+
+    let self_box: LayoutBox = LayoutBox {
+        node_id: node_id, x: x + st.margin, y: y + st.margin,
+        w: box_w, h: box_h, st: st, text: "", img_src: ""
+    }
+    let final_boxes: [LayoutBox] = array_push(content_res.boxes, self_box)
+
+    let total_h: int = box_h + (st.margin * 2)
+    return LayoutResult { boxes: final_boxes, height: total_h }
+end
+
+;; Punkt wejścia. `win_handle`: uchwyt okna z załadowanym fontem, do
+;; realnego pomiaru tekstu i naturalnego rozmiaru obrazków — przekaż
+;; -1, jeśli layoutujesz bez otwartego okna (np. w testach).
+pub fn layout(dom: dom::Dom, sheet: css::Stylesheet, viewport_w: int, win_handle: int) -> [LayoutBox] is
+    if array_len(dom.nodes) == 0 is return [] end
+    let res: LayoutResult = layout_node(win_handle, dom, sheet, 0, 0, 0, viewport_w, style::root_style(), [])
+    return res.boxes
+end

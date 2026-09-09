@@ -1,0 +1,101 @@
+use "silver -> ffi_shim"    from "ffi"
+use "silver -> engine -> dom"    from "dom"
+use "silver -> engine -> layout" from "layout"
+use "silver -> engine -> json"    from "json"
+
+pub fn render(win_handle: int, boxes: [layout::LayoutBox], dom: dom::Dom,
+              scroll_y: int, input_values: json::JsonValue, focused_id: string) is
+    ffi::silver_clear(win_handle, 250, 250, 250)
+
+    let count: int = array_len(boxes)
+    let mut i: int = count - 1
+    while i >= 0 is
+        let b: layout::LayoutBox = boxes[i]
+        i -= 1
+        let by: int = b.y - scroll_y
+
+        if b.img_src != "" is
+            ffi::silver_draw_image(win_handle, b.img_src, b.x, by, b.w, b.h)
+            continue
+        end
+
+        if b.text != "" is
+            ffi::silver_draw_text(win_handle, b.x, by, b.text,
+                b.st.color.r, b.st.color.g, b.st.color.b)
+            continue
+        end
+
+        if b.st.has_bg is
+            ffi::silver_fill_rect(win_handle, b.x, by, b.w, b.h,
+                b.st.background.r, b.st.background.g, b.st.background.b, b.st.background.a)
+        end
+        if b.st.border > 0 is
+            ffi::silver_stroke_rect(win_handle, b.x, by, b.w, b.h,
+                b.st.border_color.r, b.st.border_color.g, b.st.border_color.b)
+        end
+
+        if b.node_id >= 0 && dom.nodes[b.node_id].tag == "input" is
+            draw_input(win_handle, dom, b, by, input_values, focused_id)
+        end
+    end
+
+    ffi::silver_present(win_handle)
+end
+
+fn draw_input(win_handle: int, dom: dom::Dom, b: layout::LayoutBox, by: int,
+              input_values: json::JsonValue, focused_id: string) is
+    let node: dom::DomNode = dom.nodes[b.node_id]
+    let stored: string = json::get_str(input_values, node.attr_id)
+    let value: string = if stored != "" then stored else node.attr_value
+    let text_x: int = b.x + 8
+    let text_y: int = by + (b.h - b.st.font_size) / 2
+
+    if value != "" is
+        ffi::silver_draw_text(win_handle, text_x, text_y, value,
+            b.st.color.r, b.st.color.g, b.st.color.b)
+    end
+
+    if node.attr_id != "" && node.attr_id == focused_id is
+        let cursor_x: int = text_x + ffi::silver_measure_text(win_handle, value) + 2
+        ffi::silver_fill_rect(win_handle, cursor_x, by + 4, 2, b.h - 8,
+            b.st.color.r, b.st.color.g, b.st.color.b, 255)
+    end
+end
+
+;; Zwraca node_id pierwszego (najbardziej "na wierzchu") elementu z
+;; niepustym on_click, którego prostokąt zawiera (px, py) — we
+;; WSPÓŁRZĘDNYCH EKRANU (a więc już przesuniętych o scroll_y przez
+;; wywołującego, patrz app.h#), albo -1.
+pub fn hit_test(boxes: [layout::LayoutBox], dom: dom::Dom, px: int, py: int) -> int is
+    let count: int = array_len(boxes)
+    let mut i: int = 0
+    while i < count is
+        let b: layout::LayoutBox = boxes[i]
+        i += 1
+        if b.node_id < 0 is continue end
+        let node: dom::DomNode = dom.nodes[b.node_id]
+        if node.on_click == "" is continue end
+        if px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h is
+            return b.node_id
+        end
+    end
+    return -1
+end
+
+;; Jak wyżej, ale szuka <input> pod (px, py) i zwraca jego attr_id
+;; (albo "" jeśli nic nie trafiono) — używane do ustawiania fokusu.
+pub fn hit_test_input(boxes: [layout::LayoutBox], dom: dom::Dom, px: int, py: int) -> string is
+    let count: int = array_len(boxes)
+    let mut i: int = 0
+    while i < count is
+        let b: layout::LayoutBox = boxes[i]
+        i += 1
+        if b.node_id < 0 is continue end
+        let node: dom::DomNode = dom.nodes[b.node_id]
+        if node.tag != "input" is continue end
+        if px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h is
+            return node.attr_id
+        end
+    end
+    return ""
+end

@@ -1,0 +1,187 @@
+pub struct DomNode is
+    pub id:         int
+    pub parent:     int         ;; -1 dla roota
+    pub tag:        string       ;; "div" | "text" | ... | "root"
+    pub text:       string        ;; treść dla tag == "text"
+    pub attr_id:    string         ;; wartość id="..."
+    pub attr_class: string          ;; wartość class="..." (rozdzielone spacją)
+    pub on_click:   string           ;; wartość on-click="..." (nazwa handlera)
+    pub attr_src:   string            ;; wartość src="..." (dla <img>)
+    pub attr_value: string             ;; wartość value="..." (dla <input>, stan początkowy)
+    pub children:   [int]
+end
+
+pub struct Dom is
+    pub nodes: [DomNode]
+end
+
+fn is_space(c: string) -> bool is
+    return c == " " || c == "\n" || c == "\t" || c == "\r"
+end
+
+fn skip_spaces(html: string, pos: int) -> int is
+    let mut p: int = pos
+    while p < string_len(html) && is_space(string_at(html, p)) is
+        p += 1
+    end
+    return p
+end
+
+;; Szuka `needle` zaczynając od `from` (string_find zawsze szuka od
+;; początku stringa, więc robimy to na przesuniętym wycinku i wracamy
+;; z powrotem do indeksu w oryginalnym stringu).
+fn find_from(html: string, needle: string, from: int) -> int is
+    if from >= string_len(html) is return -1 end
+    let idx: int = string_find(string_slice(html, from, string_len(html)), needle)
+    if idx < 0 is return -1 end
+    return idx + from
+end
+
+fn new_node(dom: Dom, parent: int, tag: string) -> Dom is
+    let node: DomNode = DomNode {
+        id: array_len(dom.nodes), parent: parent, tag: tag, text: "",
+        attr_id: "", attr_class: "", on_click: "", attr_src: "", attr_value: "",
+        children: []
+    }
+    let mut d: Dom = Dom { nodes: array_push(dom.nodes, node) }
+    if parent >= 0 is
+        d.nodes[parent].children = array_push(d.nodes[parent].children, node.id)
+    end
+    return d
+end
+
+;; Parsuje jeden atrybut `name="value"` od pos (po whitespace).
+;; Zwraca "name\u0001value\u0001nowa_pozycja" — proste "krotki jako
+;; string" zamiast wielokrotnych return values, których H# nie ma.
+fn parse_attr(html: string, pos: int) -> string is
+    let n: int = string_len(html)
+    let mut p: int = skip_spaces(html, pos)
+    let start: int = p
+    while p < n && string_at(html, p) != "=" && !is_space(string_at(html, p)) &&
+          string_at(html, p) != ">" && string_at(html, p) != "/" is
+        p += 1
+    end
+    let name: string = string_slice(html, start, p)
+    if name == "" is return "\u0001\u0001" + to_string(p) end
+
+    p = skip_spaces(html, p)
+    if p >= n || string_at(html, p) != "=" is
+        return name + "\u0001\u0001" + to_string(p)
+    end
+    p += 1
+    p = skip_spaces(html, p)
+    if p >= n || string_at(html, p) != "\"" is
+        return name + "\u0001\u0001" + to_string(p)
+    end
+    p += 1
+    let vstart: int = p
+    while p < n && string_at(html, p) != "\"" is
+        p += 1
+    end
+    let val: string = string_slice(html, vstart, p)
+    if p < n is p += 1 end   ;; zjedz zamykający "
+    return name + "\u0001" + val + "\u0001" + to_string(p)
+end
+
+fn apply_attr(dom: Dom, node_id: int, name: string, val: string) -> Dom is
+    let mut d: Dom = dom
+    if name == "id" is
+        d.nodes[node_id].attr_id = val
+    elsif name == "class" is
+        d.nodes[node_id].attr_class = val
+    elsif name == "on-click" is
+        d.nodes[node_id].on_click = val
+    elsif name == "src" is
+        d.nodes[node_id].attr_src = val
+    elsif name == "value" is
+        d.nodes[node_id].attr_value = val
+    end
+    return d
+end
+
+;; Parsuje dzieci zaczynając od pos, aż napotka `</` (koniec rodzica)
+;; albo koniec stringa.
+pub fn parse_children(html: string, pos: int, parent: int, dom: Dom) -> Dom is
+    let n: int = string_len(html)
+    let mut p: int = pos
+    let mut d: Dom = dom
+
+    while p < n is
+        p = skip_spaces(html, p)
+        if p >= n is return d end
+
+        if string_at(html, p) == "<" is
+            if p + 1 < n && string_at(html, p + 1) == "/" is
+                return d   ;; </tag> — kończymy dzieci tego rodzica
+            end
+            let mut q: int = p + 1
+            let tag_start: int = q
+            while q < n && !is_space(string_at(html, q)) &&
+                  string_at(html, q) != ">" && string_at(html, q) != "/" is
+                q += 1
+            end
+            let tag: string = string_slice(html, tag_start, q)
+
+            d = new_node(d, parent, tag)
+            let node_id: int = array_len(d.nodes) - 1
+
+            let mut ap: int = q
+            let mut self_close: bool = false
+            while ap < n is
+                ap = skip_spaces(html, ap)
+                if ap >= n is return d end
+                let c: string = string_at(html, ap)
+                if c == "/" is
+                    self_close = true
+                    ap += 1
+                elsif c == ">" is
+                    ap += 1
+                    break
+                else is
+                    let res: string = parse_attr(html, ap)
+                    let parts: [string] = string_split(res, "\u0001")
+                    let aname: string = parts[0]
+                    let aval: string  = parts[1]
+                    let newp: int = str_to_int(parts[2])
+                    if aname != "" is
+                        d = apply_attr(d, node_id, aname, aval)
+                    end
+                    ap = newp
+                end
+            end
+
+            if self_close is
+                p = ap
+            else is
+                d = parse_children(html, ap, node_id, d)
+                let close_idx: int = find_from(html, "</" + tag, ap)
+                if close_idx < 0 is
+                    p = n
+                else is
+                    let gt: int = find_from(html, ">", close_idx)
+                    p = if gt < 0 then n else gt + 1
+                end
+            end
+        else is
+            let text_start: int = p
+            let mut tp: int = p
+            while tp < n && string_at(html, tp) != "<" is
+                tp += 1
+            end
+            let trimmed: string = string_trim(string_slice(html, text_start, tp))
+            if trimmed != "" is
+                d = new_node(d, parent, "text")
+                d.nodes[array_len(d.nodes) - 1].text = trimmed
+            end
+            p = tp
+        end
+    end
+    return d
+end
+
+pub fn parse(html: string) -> Dom is
+    let mut dom: Dom = Dom { nodes: [] }
+    dom = new_node(dom, -1, "root")
+    dom = parse_children(html, 0, 0, dom)
+    return dom
+end

@@ -1,4 +1,4 @@
-extern dynamic [c, "silverdialogs"] is
+extern static [c, "silverdialogs"] is
     fn silver_dialog_open_file(title: string, filter_desc: string, filter_pattern: string) -> string
     fn silver_dialog_save_file(title: string, default_name: string) -> string
     fn silver_dialog_open_folder(title: string) -> string

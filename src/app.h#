@@ -30,6 +30,11 @@ pub struct App is
     pub scroll_y:      int              ;; offset przewijania strony w px
     pub input_values:  ejson::JsonValue   ;; { attr_id: aktualna wartość <input> }
     pub focused_input: string              ;; attr_id focusowanego <input>, "" = brak
+    pub hovered_node:  int                  ;; rozbudowa v0.2: node_id pod kursorem
+                                              ;; (dla CSS `:hover`), -1 = mysz poza treścią
+    pub active_node:   int                    ;; rozbudowa v0.2: node_id z wciśniętym
+                                                ;; przyciskiem myszy (dla CSS `:active`),
+                                                ;; -1 = nic nie jest wciśnięte
 
     pub html_path: string   ;; zapamiętane ścieżki (do hot reload) — "" jeśli load_html_str użyty
     pub css_path:  string
@@ -68,6 +73,8 @@ pub fn new(title: string, width: int, height: int) -> App is
         scroll_y: 0,
         input_values: ejson::obj(),
         focused_input: "",
+        hovered_node: -1,
+        active_node: -1,
         html_path: "", css_path: "", dev_mode: false,
         last_html_mtime: 0, last_css_mtime: 0,
         on_tick: identity_tick
@@ -178,7 +185,7 @@ pub fn load_js(app: App, files: [string]) -> App is
     let mut a: App = app
     a.js_handle = js::js_init(a.win.handle)
     if a.js_handle < 0 is
-        log::warn("Silver: nie udało się zainicjować QuickJS (libsilverjs.so?) — silver.invoke() z JS nie zadziała")
+        log::warn("Silver: nie udało się zainicjować QuickJS (libsilverjs.a wlinkowany statycznie? patrz native/README.md) — silver.invoke() z JS nie zadziała")
         return a
     end
     let count: int = array_len(files)
@@ -232,7 +239,14 @@ end
 fn compute(app: App) -> RenderPass is
     let w: int = window::ffi_width(app.win)
     let rendered_dom: dom::Dom = template::apply_state(app.dom, app.store)
-    let boxes: [layout::LayoutBox] = layout::layout(rendered_dom, app.sheet, w, app.win.handle)
+    ;; Rozbudowa v0.2: layout_i zamiast layout — niesie stan interakcji
+    ;; (hover/focus/active), żeby CSS `:hover`/`:focus`/`:active`
+    ;; faktycznie coś zmieniały.
+    let interaction: css::InteractionState = css::InteractionState {
+        hovered_id: app.hovered_node, focused_id: app.focused_input,
+        active_id: app.active_node
+    }
+    let boxes: [layout::LayoutBox] = layout::layout_i(rendered_dom, app.sheet, w, app.win.handle, interaction)
     return RenderPass { rendered_dom: rendered_dom, boxes: boxes }
 end
 
@@ -282,6 +296,12 @@ fn handle_click(app: App, pass: RenderPass, x: int, y: int) -> App is
         window::stop_text_input(a.win)
     end
 
+    ;; Rozbudowa v0.2: `hit_test_any` (bez filtra on-click) dla
+    ;; `active_node` — CSS `:active` ma działać na KAŻDYM elemencie ze
+    ;; stylem, nie tylko klikalnym. Dispatch komendy niżej wciąż używa
+    ;; osobnego, filtrowanego `hit_test`.
+    a.active_node = paint::hit_test_any(pass.boxes, x, content_y)
+
     let hit: int = paint::hit_test(pass.boxes, pass.rendered_dom, x, content_y)
     if hit >= 0 is
         let handler_name: string = pass.rendered_dom.nodes[hit].on_click
@@ -290,6 +310,31 @@ fn handle_click(app: App, pass: RenderPass, x: int, y: int) -> App is
             log::debug("Silver: komenda '" + handler_name + "' -> " + result)
         end
     end
+    return a
+end
+
+;; Rozbudowa v0.2: zeruje `active_node` na puszczenie przycisku myszy —
+;; niezależnie OD TEGO, gdzie mysz jest w tym momencie (jak w prawdziwym
+;; CSS: `:active` trwa do `mouse_up`, nawet jeśli kursor zjechał z
+;; elementu w międzyczasie — to celowe uproszczenie względem pełnej
+;; specyfikacji, gdzie zjechanie kursorem może wcześniej ubić `:active`
+;; przez zmianę hover-chain; tu tego nie replikujemy).
+fn handle_mouse_up(app: App) -> App is
+    let mut a: App = app
+    a.active_node = -1
+    return a
+end
+
+;; Rozbudowa v0.2: hit-test pod kursorem myszy dla CSS `:hover`, teraz
+;; przez `hit_test_any` (bez filtra on-click) — działa na KAŻDYM
+;; elemencie ze stylem, nie tylko klikalnym. Zawsze aktualizuje
+;; `hovered_node` — to `run()` (wołający) decyduje, czy realna zmiana
+;; wymaga przemalowania (`dirty`), żeby nie odświeżać ekranu na każdy
+;; mikroruch myszy nad tym samym elementem.
+fn handle_mouse_move(app: App, pass: RenderPass, x: int, y: int) -> App is
+    let mut a: App = app
+    let content_y: int = y + a.scroll_y
+    a.hovered_node = paint::hit_test_any(pass.boxes, x, content_y)
     return a
 end
 
@@ -312,6 +357,15 @@ pub fn run(app: App) is
             a = handle_click(a, pass, ev.x, ev.y)
             a = a.on_tick(a)
             dirty = true
+        elsif ev.kind == "mouse_up" is
+            if a.active_node != -1 is
+                a = handle_mouse_up(a)
+                dirty = true
+            end
+        elsif ev.kind == "mouse_move" is
+            let before_hover: int = a.hovered_node
+            a = handle_mouse_move(a, pass, ev.x, ev.y)
+            if a.hovered_node != before_hover is dirty = true end
         elsif ev.kind == "text" && a.focused_input != "" is
             let cur: string = ejson::get_str(a.input_values, a.focused_input)
             a.input_values = ejson::obj_set(a.input_values, a.focused_input, ejson::str(cur + ev.text))

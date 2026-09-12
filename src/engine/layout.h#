@@ -34,10 +34,14 @@ fn measure_text(win_handle: int, text: string, font_size: int) -> int is
     return w
 end
 
-fn node_style(dom: dom::Dom, sheet: css::Stylesheet, node_id: int, inherited: style::ComputedStyle) -> style::ComputedStyle is
-    let n: dom::DomNode = dom.nodes[node_id]
-    let classes: [string] = style::split_classes(n.attr_class)
-    return style::resolve(sheet, n.tag, n.attr_id, classes, inherited)
+;; Rozbudowa v0.2: `resolve_ctx` zamiast `resolve` — silnik layoutu ma
+;; pełne `dom::Dom`, więc dostaje za darmo wsparcie dla selektorów
+;; potomka/dziecka/rodzeństwa (".card p", ".a > .b", ".a + .b",
+;; ".a ~ .b") i pseudoklas `:hover`/`:focus` (przez `interaction`),
+;; których stary `resolve` (używany np. w testach bez pełnego drzewa)
+;; nie potrafi rozwiązać.
+fn node_style(dom: dom::Dom, sheet: css::Stylesheet, node_id: int, inherited: style::ComputedStyle, interaction: css::InteractionState) -> style::ComputedStyle is
+    return style::resolve_ctx(sheet, dom, node_id, inherited, interaction)
 end
 
 fn collect_text(dom: dom::Dom, node_id: int) -> string is
@@ -56,8 +60,8 @@ fn collect_text(dom: dom::Dom, node_id: int) -> string is
     return out
 end
 
-fn is_inline(dom: dom::Dom, sheet: css::Stylesheet, node_id: int, inherited: style::ComputedStyle) -> bool is
-    return node_style(dom, sheet, node_id, inherited).display == "inline"
+fn is_inline(dom: dom::Dom, sheet: css::Stylesheet, node_id: int, inherited: style::ComputedStyle, interaction: css::InteractionState) -> bool is
+    return node_style(dom, sheet, node_id, inherited, interaction).display == "inline"
 end
 
 ;; Rozmiar <img>: jawny CSS wygrywa; inaczej naturalny rozmiar pliku
@@ -79,13 +83,34 @@ end
 
 ;; ---------- inline flow (text/span/a w bloku non-flex) ----------
 
+;; Rozbudowa: `text-align` (left/center/right) na kontenerze bloku
+;; przesuwa całą już ułożoną linię na końcu jej zbierania — dokładnie
+;; tak jak w prawdziwym CSS wyrównanie działa per-linia, nie per-run.
+fn shift_line(acc: [LayoutBox], from_idx: int, dx: int) -> [LayoutBox] is
+    if dx == 0 is return acc end
+    let mut j: int = from_idx
+    while j < array_len(acc) is
+        acc[j].x = acc[j].x + dx
+        j += 1
+    end
+    return acc
+end
+
+fn line_align_dx(text_align: string, inner_w: int, used_w: int) -> int is
+    if text_align == "center" is return (inner_w - used_w) / 2 end
+    if text_align == "right" is return inner_w - used_w end
+    return 0
+end
+
 fn flow_inline_run(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, run: [int],
                     inner_x: int, start_y: int, inner_w: int,
-                    inherited: style::ComputedStyle, boxes: [LayoutBox]) -> LayoutResult is
+                    inherited: style::ComputedStyle, interaction: css::InteractionState,
+                    boxes: [LayoutBox]) -> LayoutResult is
     let mut acc: [LayoutBox] = boxes
     let mut line_x: int = 0
     let mut line_y: int = start_y
     let mut line_max_h: int = 0
+    let mut line_start_idx: int = array_len(acc)
     let gap: int = 6
 
     let count: int = array_len(run)
@@ -93,7 +118,7 @@ fn flow_inline_run(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, run: 
     while i < count is
         let node_id: int = run[i]
         i += 1
-        let st: style::ComputedStyle = node_style(dom, sheet, node_id, inherited)
+        let st: style::ComputedStyle = node_style(dom, sheet, node_id, inherited, interaction)
         let text: string = collect_text(dom, node_id)
         if text == "" is continue end
 
@@ -101,9 +126,12 @@ fn flow_inline_run(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, run: 
         let h: int = st.font_size + 6
 
         if line_x > 0 && line_x + w > inner_w is
+            let used_w: int = line_x - gap
+            acc = shift_line(acc, line_start_idx, line_align_dx(inherited.text_align, inner_w, used_w))
             line_y = line_y + line_max_h
             line_x = 0
             line_max_h = 0
+            line_start_idx = array_len(acc)
         end
 
         let b: LayoutBox = LayoutBox {
@@ -114,6 +142,13 @@ fn flow_inline_run(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, run: 
 
         line_x = line_x + w + gap
         if h > line_max_h is line_max_h = h end
+    end
+
+    ;; ostatnia (albo jedyna) linia — nikt jej jeszcze nie wyrównał, bo
+    ;; nie było kolejnego elementu, który wymusiłby zawinięcie.
+    if array_len(acc) > line_start_idx is
+        let used_w: int = line_x - gap
+        acc = shift_line(acc, line_start_idx, line_align_dx(inherited.text_align, inner_w, used_w))
     end
 
     let total_h: int = (line_y - start_y) + line_max_h
@@ -130,7 +165,7 @@ end
 
 fn layout_flex(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: int,
                x: int, y: int, st: style::ComputedStyle,
-               inner_x: int, inner_y: int, inner_w: int,
+               inner_x: int, inner_y: int, inner_w: int, interaction: css::InteractionState,
                boxes: [LayoutBox]) -> LayoutResult is
     let n: dom::DomNode = dom.nodes[node_id]
     let row: bool = st.flex_dir != "column"
@@ -144,7 +179,7 @@ fn layout_flex(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: 
     let mut auto_count: int = 0
     let mut i: int = 0
     while i < count is
-        let cst: style::ComputedStyle = node_style(dom, sheet, ids[i], st)
+        let cst: style::ComputedStyle = node_style(dom, sheet, ids[i], st, interaction)
         let m: int = explicit_main_size(cst, row)
         if m >= 0 is sum_explicit = sum_explicit + m else is auto_count += 1 end
         i += 1
@@ -157,7 +192,7 @@ fn layout_flex(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: 
     let mut total_main: int = gaps_total
     i = 0
     while i < count is
-        let cst: style::ComputedStyle = node_style(dom, sheet, ids[i], st)
+        let cst: style::ComputedStyle = node_style(dom, sheet, ids[i], st, interaction)
         let m: int = explicit_main_size(cst, row)
         total_main = total_main + (if m >= 0 then m elsif row then per_auto else 0)
         i += 1
@@ -178,7 +213,7 @@ fn layout_flex(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: 
     i = 0
     while i < count is
         let child_id: int = ids[i]
-        let cst: style::ComputedStyle = node_style(dom, sheet, child_id, st)
+        let cst: style::ComputedStyle = node_style(dom, sheet, child_id, st, interaction)
         let explicit: int = explicit_main_size(cst, row)
         let assigned_main: int = if explicit >= 0 then explicit elsif row then per_auto else -1
 
@@ -186,13 +221,14 @@ fn layout_flex(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: 
         let child_x: int = if row then inner_x + cursor else inner_x
         let child_y: int = if row then inner_y else inner_y + cursor
         let child_w: int = if row then assigned_main else inner_w
-        let res: LayoutResult = layout_node(win_handle, dom, sheet, child_id, child_x, child_y, child_w, st, acc)
+        let res: LayoutResult = layout_node(win_handle, dom, sheet, child_id, child_x, child_y, child_w, st, interaction, acc)
         acc = res.boxes
 
         ;; cross-axis align: przesuń pudełka tego dziecka (dodane w tej
         ;; iteracji, [before_len..len)) o dx wg align-items (tylko dla
         ;; kolumny — align w wierszu wymagałby znanej z góry wysokości
-        ;; kontenera, co w v0.3 pomijamy jako uproszczenie).
+        ;; kontenera, co na razie pomijamy jako uproszczenie — patrz
+        ;; ROADMAP.md).
         if array_len(acc) > before_len is
             let self_box: LayoutBox = acc[array_len(acc) - 1]  ;; self_box dziecka jest ostatnie (post-order)
             if row is
@@ -223,16 +259,43 @@ end
 
 ;; ---------- główny layout węzła ----------
 
+;; Rozbudowa v0.2: rozwiązuje sentinel `-1` (auto) na `mar_left`/
+;; `mar_right` (patrz `style::parse_margin_lr`) w rzeczywiste piksele,
+;; rozdzielając nadmiarową przestrzeń (`avail_w - used_w`) — dokładnie
+;; klasyczne CSS-owe `margin: 0 auto`. Gdy żaden bok nie jest `auto`,
+;; zwraca wartości bez zmian (`space` i tak wtedy nie jest używane) —
+;; więc bezpieczne do wołania zawsze, nie tylko gdy `margin: auto`
+;; faktycznie wystąpiło w CSS.
+fn resolve_auto_margins(ml_in: int, mr_in: int, avail_w: int, used_w: int) -> style::BoxSides is
+    let mut ml: int = ml_in
+    let mut mr: int = mr_in
+    if ml == -1 || mr == -1 is
+        let remaining: int = avail_w - used_w
+        let space: int = if remaining > 0 then remaining else 0
+        if ml == -1 && mr == -1 is
+            ml = space / 2
+            mr = space - ml
+        elsif ml == -1 is
+            ml = space - mr
+            if ml < 0 is ml = 0 end
+        else is
+            mr = space - ml
+            if mr < 0 is mr = 0 end
+        end
+    end
+    return style::BoxSides { top: 0, right: mr, bottom: 0, left: ml }
+end
+
 fn layout_node(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: int,
                x: int, y: int, avail_w: int, inherited: style::ComputedStyle,
-               boxes: [LayoutBox]) -> LayoutResult is
+               interaction: css::InteractionState, boxes: [LayoutBox]) -> LayoutResult is
     let n: dom::DomNode = dom.nodes[node_id]
 
     if n.tag == "text" is
-        return flow_inline_run(win_handle, dom, sheet, [node_id], x, y, avail_w, inherited, boxes)
+        return flow_inline_run(win_handle, dom, sheet, [node_id], x, y, avail_w, inherited, interaction, boxes)
     end
 
-    let st: style::ComputedStyle = node_style(dom, sheet, node_id, inherited)
+    let st: style::ComputedStyle = node_style(dom, sheet, node_id, inherited, interaction)
     if st.display == "none" is
         return LayoutResult { boxes: boxes, height: 0 }
     end
@@ -241,22 +304,28 @@ fn layout_node(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: 
 
     if n.tag == "img" is
         let img: LayoutBox = image_size(win_handle, n.attr_src, st)
+        ;; elementy zastępowalne (obrazki) też mogą korzystać z
+        ;; `margin: auto` — ich "używana szerokość" to naturalny/CSS-owy
+        ;; rozmiar (`img.w`), nie `box_w` (które dla img i tak nie jest
+        ;; liczone wyżej).
+        let img_m: style::BoxSides = resolve_auto_margins(st.mar_left, st.mar_right, avail_w, img.w)
         let placed: LayoutBox = LayoutBox {
-            node_id: node_id, x: x + st.margin, y: y + st.margin,
+            node_id: node_id, x: x + img_m.left, y: y + st.mar_top,
             w: img.w, h: img.h, st: st, text: "", img_src: n.attr_src
         }
         let acc: [LayoutBox] = array_push(boxes, placed)
-        return LayoutResult { boxes: acc, height: placed.h + (st.margin * 2) }
+        return LayoutResult { boxes: acc, height: placed.h + st.mar_top + st.mar_bottom }
     end
 
-    let inner_w: int = box_w - (st.padding * 2)
-    let inner_x: int = x + st.margin + st.padding
-    let inner_y_start: int = y + st.margin + st.padding
+    let m: style::BoxSides = resolve_auto_margins(st.mar_left, st.mar_right, avail_w, box_w)
+    let inner_w: int = box_w - st.pad_left - st.pad_right
+    let inner_x: int = x + m.left + st.pad_left
+    let inner_y_start: int = y + st.mar_top + st.pad_top
 
     let mut content_res: LayoutResult = LayoutResult { boxes: boxes, height: 0 }
 
     if st.display == "flex" is
-        content_res = layout_flex(win_handle, dom, sheet, node_id, x, y, st, inner_x, inner_y_start, inner_w, boxes)
+        content_res = layout_flex(win_handle, dom, sheet, node_id, x, y, st, inner_x, inner_y_start, inner_w, interaction, boxes)
     else is
         let mut acc: [LayoutBox] = boxes
         let mut cursor_y: int = inner_y_start
@@ -268,25 +337,25 @@ fn layout_node(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: 
             let child_id: int = n.children[i]
             i += 1
 
-            if is_inline(dom, sheet, child_id, st) is
+            if is_inline(dom, sheet, child_id, st, interaction) is
                 run = array_push(run, child_id)
                 continue
             end
 
             if array_len(run) > 0 is
-                let rres: LayoutResult = flow_inline_run(win_handle, dom, sheet, run, inner_x, cursor_y, inner_w, st, acc)
+                let rres: LayoutResult = flow_inline_run(win_handle, dom, sheet, run, inner_x, cursor_y, inner_w, st, interaction, acc)
                 acc = rres.boxes
                 cursor_y = cursor_y + rres.height
                 run = []
             end
 
-            let res: LayoutResult = layout_node(win_handle, dom, sheet, child_id, inner_x, cursor_y, inner_w, st, acc)
+            let res: LayoutResult = layout_node(win_handle, dom, sheet, child_id, inner_x, cursor_y, inner_w, st, interaction, acc)
             acc = res.boxes
             cursor_y = cursor_y + res.height
         end
 
         if array_len(run) > 0 is
-            let rres: LayoutResult = flow_inline_run(win_handle, dom, sheet, run, inner_x, cursor_y, inner_w, st, acc)
+            let rres: LayoutResult = flow_inline_run(win_handle, dom, sheet, run, inner_x, cursor_y, inner_w, st, interaction, acc)
             acc = rres.boxes
             cursor_y = cursor_y + rres.height
         end
@@ -295,23 +364,33 @@ fn layout_node(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: 
     end
 
     let content_h: int = content_res.height
-    let box_h: int = if st.height >= 0 then st.height else content_h + (st.padding * 2)
+    let box_h: int = if st.height >= 0 then st.height else content_h + st.pad_top + st.pad_bottom
 
     let self_box: LayoutBox = LayoutBox {
-        node_id: node_id, x: x + st.margin, y: y + st.margin,
+        node_id: node_id, x: x + m.left, y: y + st.mar_top,
         w: box_w, h: box_h, st: st, text: "", img_src: ""
     }
     let final_boxes: [LayoutBox] = array_push(content_res.boxes, self_box)
 
-    let total_h: int = box_h + (st.margin * 2)
+    let total_h: int = box_h + st.mar_top + st.mar_bottom
     return LayoutResult { boxes: final_boxes, height: total_h }
 end
 
-;; Punkt wejścia. `win_handle`: uchwyt okna z załadowanym fontem, do
+;; Punkty wejścia. `win_handle`: uchwyt okna z załadowanym fontem, do
 ;; realnego pomiaru tekstu i naturalnego rozmiaru obrazków — przekaż
 ;; -1, jeśli layoutujesz bez otwartego okna (np. w testach).
+;;
+;; `layout` (bez stanu interakcji, `css::no_interaction()`) zostaje
+;; niezmieniony — używają go testy i każdy dotychczasowy kod, który nie
+;; wie nic o `:hover`/`:focus`. `layout_i` (rozbudowa v0.2) to to samo,
+;; ale ze stanem myszy/focusu, którego potrzebuje `app.h#`, żeby
+;; `:hover`/`:focus` faktycznie coś malowały.
 pub fn layout(dom: dom::Dom, sheet: css::Stylesheet, viewport_w: int, win_handle: int) -> [LayoutBox] is
+    return layout_i(dom, sheet, viewport_w, win_handle, css::no_interaction())
+end
+
+pub fn layout_i(dom: dom::Dom, sheet: css::Stylesheet, viewport_w: int, win_handle: int, interaction: css::InteractionState) -> [LayoutBox] is
     if array_len(dom.nodes) == 0 is return [] end
-    let res: LayoutResult = layout_node(win_handle, dom, sheet, 0, 0, 0, viewport_w, style::root_style(), [])
+    let res: LayoutResult = layout_node(win_handle, dom, sheet, 0, 0, 0, viewport_w, style::root_style(), interaction, [])
     return res.boxes
 end

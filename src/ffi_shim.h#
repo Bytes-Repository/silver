@@ -1,4 +1,4 @@
-extern dynamic [c, "silvershim"] is
+extern static [c, "silvershim"] is
     ;; okno
     fn silver_window_create(title: string, w: int, h: int) -> int
     fn silver_window_close(h: int) -> bool
@@ -17,7 +17,7 @@ extern dynamic [c, "silvershim"] is
     ;; obrazki (<img>, patrz engine/layout.h# i engine/paint.h#)
     fn silver_image_width(h: int, path: string) -> int
     fn silver_image_height(h: int, path: string) -> int
-    fn silver_draw_image(h: int, path: string, x: int, y: int, w: int, rh: int) -> bool
+    fn silver_draw_image(h: int, path: string, x: int, y: int, w: int, rh: int, a: int) -> bool
 
     ;; motyw systemowy — best-effort, patrz native/silver_shim.c
     fn silver_system_theme() -> string
@@ -30,10 +30,16 @@ extern dynamic [c, "silvershim"] is
     fn silver_event_payload(h: int) -> string
 
     ;; rysowanie (immediate-mode, wołane co klatkę przez engine/paint.h#)
+    ;; v0.2: wszystkie cztery mają teraz kanał alfa (a: 0-255) — patrz
+    ;; native/silver_shim.c i ROADMAP.md, "Alfa dla tekstu/obramowań/
+    ;; obrazków" (wcześniej udokumentowane ograniczenie, teraz naprawione,
+    ;; łącznie z ukrytym błędem brakującego SDL_BLENDMODE_BLEND we
+    ;; fill_rect, który sprawiał że nawet istniejąca alfa tła była
+    ;; ignorowana przez SDL2).
     fn silver_clear(h: int, r: int, g: int, b: int) -> bool
     fn silver_fill_rect(h: int, x: int, y: int, w: int, rh: int, r: int, g: int, b: int, a: int) -> bool
-    fn silver_stroke_rect(h: int, x: int, y: int, w: int, rh: int, r: int, g: int, b: int) -> bool
-    fn silver_draw_text(h: int, x: int, y: int, text: string, r: int, g: int, b: int) -> int
+    fn silver_stroke_rect(h: int, x: int, y: int, w: int, rh: int, r: int, g: int, b: int, a: int) -> bool
+    fn silver_draw_text(h: int, x: int, y: int, text: string, r: int, g: int, b: int, a: int) -> int
     fn silver_measure_text(h: int, text: string) -> int
     fn silver_present(h: int) -> bool
     fn silver_delay(ms: int) -> bool

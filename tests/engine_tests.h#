@@ -1,6 +1,8 @@
 use "silver -> engine -> dom"  from "dom"
 use "silver -> engine -> css"   from "css"
 use "silver -> engine -> style"  from "style"
+use "silver -> engine -> layout"  from "layout"
+use "silver -> engine -> paint"   from "paint"
 use "silver -> engine -> json"    from "json"
 use "std -> test" from "test"
 
@@ -57,6 +59,65 @@ fn test_css_specificity_id_beats_class() is
     assert_eq(decls[array_len(decls) - 1].val, "blue")
 end
 
+;; ---------- css.h# — naprawa: wiele klas na jednym tokenie (.a.b) ----------
+
+#[test]
+fn test_css_multi_class_selector_matches_element_with_both() is
+    ;; ".btn.primary" wymaga OBU klas na TYM SAMYM elemencie — dawniej
+    ;; ten selektor po cichu nigdy nie dopasowywał (patrz komentarz
+    ;; przy `css::selector_matches`).
+    let ok: bool = css::selector_matches(".btn.primary", "div", "", ["btn", "primary"])
+    assert_true(ok)
+end
+
+#[test]
+fn test_css_multi_class_selector_rejects_partial_match() is
+    ;; element ma tylko "btn", nie "primary" -> nie powinno dopasować
+    let ok: bool = css::selector_matches(".btn.primary", "div", "", ["btn"])
+    assert_true(!ok)
+end
+
+#[test]
+fn test_css_tag_plus_class_selector() is
+    ;; "div.btn" — tag I klasa naraz
+    assert_true(css::selector_matches("div.btn", "div", "", ["btn"]))
+    assert_true(!css::selector_matches("div.btn", "span", "", ["btn"]))
+end
+
+#[test]
+fn test_css_id_plus_class_selector() is
+    assert_true(css::selector_matches("#card.active", "div", "card", ["active"]))
+    assert_true(!css::selector_matches("#card.active", "div", "other", ["active"]))
+end
+
+;; ---------- css::parse — rozbudowa: komentarze /* ... */ ----------
+
+#[test]
+fn test_css_strips_comment_before_selector() is
+    ;; bez usuwania komentarzy ten komentarz wciągnąłby się do
+    ;; selektora ".hint" i reguła po cichu przestałaby cokolwiek trafiać
+    let sheet: css::Stylesheet = css::parse(
+        "/* uwaga: to jest hint */\n.hint { color: red; }")
+    assert_eq(array_len(sheet.rules), 1)
+    assert_eq(sheet.rules[0].selector, ".hint")
+end
+
+#[test]
+fn test_css_strips_comment_inside_block() is
+    let sheet: css::Stylesheet = css::parse(
+        ".x { /* to nie powinno się liczyć */ color: blue; }")
+    assert_eq(array_len(sheet.rules[0].decls), 1)
+    assert_eq(sheet.rules[0].decls[0].prop, "color")
+end
+
+#[test]
+fn test_css_strips_multiple_comments() is
+    let sheet: css::Stylesheet = css::parse(
+        "/* a */ .x { color: red; } /* b */ .y { color: blue; }")
+    assert_eq(array_len(sheet.rules), 2)
+    assert_eq(sheet.rules[1].selector, ".y")
+end
+
 ;; ---------- style::resolve — dziedziczenie ----------
 
 #[test]
@@ -75,7 +136,838 @@ fn test_style_heading_default_size() is
     assert_eq(st.font_size, 32)
 end
 
-;; ---------- engine::json ----------
+;; ---------- style::resolve — rozbudowa: padding/margin per-strona ----------
+
+#[test]
+fn test_padding_shorthand_one_value() is
+    let sheet: css::Stylesheet = css::parse("div { padding: 10px; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(st.pad_top, 10)
+    assert_eq(st.pad_right, 10)
+    assert_eq(st.pad_bottom, 10)
+    assert_eq(st.pad_left, 10)
+end
+
+#[test]
+fn test_padding_shorthand_two_values() is
+    ;; góra/dół = 10, lewo/prawo = 20 — dokładnie jak w CSS
+    let sheet: css::Stylesheet = css::parse("div { padding: 10px 20px; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(st.pad_top, 10)
+    assert_eq(st.pad_bottom, 10)
+    assert_eq(st.pad_right, 20)
+    assert_eq(st.pad_left, 20)
+end
+
+#[test]
+fn test_padding_shorthand_four_values() is
+    ;; góra, prawo, dół, lewo — zgodnie z ruchem wskazówek zegara
+    let sheet: css::Stylesheet = css::parse("div { padding: 1px 2px 3px 4px; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(st.pad_top, 1)
+    assert_eq(st.pad_right, 2)
+    assert_eq(st.pad_bottom, 3)
+    assert_eq(st.pad_left, 4)
+end
+
+#[test]
+fn test_padding_longhand_overrides_shorthand() is
+    ;; kolejność deklaracji w bloku decyduje — dokładnie jak w CSS,
+    ;; więc padding-left po padding nadpisuje tylko lewy bok.
+    let sheet: css::Stylesheet = css::parse("div { padding: 5px; padding-left: 40px; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(st.pad_top, 5)
+    assert_eq(st.pad_left, 40)
+end
+
+#[test]
+fn test_margin_shorthand_three_values() is
+    let sheet: css::Stylesheet = css::parse("div { margin: 1px 2px 3px; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(st.mar_top, 1)
+    assert_eq(st.mar_right, 2)
+    assert_eq(st.mar_left, 2)
+    assert_eq(st.mar_bottom, 3)
+end
+
+;; ---------- style::resolve — rozbudowa: margin: auto ----------
+
+#[test]
+fn test_margin_auto_shorthand_both_sides() is
+    let sheet: css::Stylesheet = css::parse("div { margin: 0 auto; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    ;; sentinel -1 dopóki layout.h# nie zna avail_w/box_w, żeby rozdzielić przestrzeń
+    assert_eq(st.mar_left, -1)
+    assert_eq(st.mar_right, -1)
+    assert_eq(st.mar_top, 0)
+end
+
+#[test]
+fn test_margin_auto_left_only() is
+    let sheet: css::Stylesheet = css::parse("div { margin-left: auto; margin-right: 10px; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(st.mar_left, -1)
+    assert_eq(st.mar_right, 10)
+end
+
+;; ---------- style::resolve — rozbudowa: jednostki em/rem ----------
+
+#[test]
+fn test_width_rem_multiplies_by_root_font_size() is
+    ;; 1rem = 16px zawsze, niezależnie od odziedziczonego font-size
+    let sheet: css::Stylesheet = css::parse("div { width: 2rem; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(st.width, 32)
+end
+
+#[test]
+fn test_font_size_em_relative_to_inherited() is
+    let mut parent: style::ComputedStyle = style::root_style()
+    parent.font_size = 20
+    let sheet: css::Stylesheet = css::parse("span { font-size: 1.5em; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "span", "", [], parent)
+    assert_eq(st.font_size, 30)
+end
+
+#[test]
+fn test_padding_em_uses_inherited_font_size() is
+    let mut parent: style::ComputedStyle = style::root_style()
+    parent.font_size = 10
+    let sheet: css::Stylesheet = css::parse("div { padding: 1em 2em; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], parent)
+    assert_eq(st.pad_top, 10)
+    assert_eq(st.pad_right, 20)
+end
+
+#[test]
+fn test_bare_number_without_unit_treated_as_px() is
+    ;; leniency: "10" (bez jednostki) parsuje się tak samo jak "10px"
+    let sheet: css::Stylesheet = css::parse("div { width: 10; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(st.width, 10)
+end
+
+#[test]
+fn test_rem_independent_of_parent_font_size() is
+    ;; w odróżnieniu od em, rem NIE zależy od odziedziczonego font-size
+    let mut parent: style::ComputedStyle = style::root_style()
+    parent.font_size = 40
+    let sheet: css::Stylesheet = css::parse("div { width: 1rem; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], parent)
+    assert_eq(st.width, 16)
+end
+
+#[test]
+fn test_margin_auto_still_works_alongside_em() is
+    ;; regresja: sentinel -1 (auto) nie powinien zderzyć się z nową
+    ;; obsługą jednostek w tym samym skrócie.
+    let sheet: css::Stylesheet = css::parse("div { margin: 1em auto; }")
+    let mut parent: style::ComputedStyle = style::root_style()
+    parent.font_size = 16
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], parent)
+    assert_eq(st.mar_top, 16)
+    assert_eq(st.mar_left, -1)
+    assert_eq(st.mar_right, -1)
+end
+
+;; ---------- layout::layout — rozbudowa: margin: auto centruje blok ----------
+
+#[test]
+fn test_layout_margin_auto_centers_block() is
+    ;; viewport 400px, blok o width:100px i margin:0 auto -> powinien
+    ;; wylądować w x=150 (400-100=300 nadmiaru, po 150 na bok).
+    let dom: dom::Dom = dom::parse("<div class=\"box\"></div>")
+    let sheet: css::Stylesheet = css::parse(".box { width: 100px; height: 20px; margin: 0 auto; background: red; }")
+    let boxes: [layout::LayoutBox] = layout::layout(dom, sheet, 400, -1)
+    let mut found: layout::LayoutBox = boxes[0]
+    let mut ok: bool = false
+    let count: int = array_len(boxes)
+    let mut i: int = 0
+    while i < count is
+        if boxes[i].w == 100 && boxes[i].h == 20 is
+            found = boxes[i]
+            ok = true
+        end
+        i += 1
+    end
+    assert_true(ok)
+    assert_eq(found.x, 150)
+end
+
+#[test]
+fn test_layout_margin_auto_no_explicit_width_is_noop() is
+    ;; bez jawnej szerokości blok i tak wypełnia całą dostępną
+    ;; przestrzeń -> margin:auto nie ma czego rozdzielać (x=0).
+    let dom: dom::Dom = dom::parse("<div class=\"box\"></div>")
+    let sheet: css::Stylesheet = css::parse(".box { height: 20px; margin: 0 auto; }")
+    let boxes: [layout::LayoutBox] = layout::layout(dom, sheet, 400, -1)
+    let mut found: layout::LayoutBox = boxes[0]
+    let mut ok: bool = false
+    let count: int = array_len(boxes)
+    let mut i: int = 0
+    while i < count is
+        if boxes[i].h == 20 is
+            found = boxes[i]
+            ok = true
+        end
+        i += 1
+    end
+    assert_true(ok)
+    assert_eq(found.x, 0)
+end
+
+;; ---------- layout::layout_i — rozbudowa: :hover przez pełny pipeline ----------
+
+#[test]
+fn test_layout_i_hover_changes_background() is
+    let dom: dom::Dom = dom::parse("<div class=\"btn\">x</div>")
+    let sheet: css::Stylesheet = css::parse(".btn:hover { background: red; }")
+    let btn_id: int = 1  ;; nodes[0]=root, nodes[1]=div.btn
+
+    let no_hover: [layout::LayoutBox] = layout::layout_i(dom, sheet, 400, -1, css::no_interaction())
+    let mut bg_no_hover: bool = false
+    let mut i: int = 0
+    while i < array_len(no_hover) is
+        if no_hover[i].node_id == btn_id && no_hover[i].st.has_bg is bg_no_hover = true end
+        i += 1
+    end
+    assert_true(!bg_no_hover)
+
+    let with_hover: [layout::LayoutBox] = layout::layout_i(
+        dom, sheet, 400, -1, css::InteractionState { hovered_id: btn_id, focused_id: "", active_id: -1 })
+    let mut bg_hover: bool = false
+    i = 0
+    while i < array_len(with_hover) is
+        if with_hover[i].node_id == btn_id && with_hover[i].st.has_bg is bg_hover = true end
+        i += 1
+    end
+    assert_true(bg_hover)
+end
+
+;; ---------- style::resolve — rozbudowa: text-align, opacity ----------
+
+#[test]
+fn test_text_align_inherits_to_children() is
+    let sheet: css::Stylesheet = css::parse("div { text-align: center; }")
+    let parent: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(parent.text_align, "center")
+    let child: style::ComputedStyle = style::resolve(css::Stylesheet { rules: [] }, "span", "", [], parent)
+    assert_eq(child.text_align, "center")
+end
+
+#[test]
+fn test_opacity_not_inherited() is
+    ;; opacity NIE dziedziczy w CSS (inaczej niż color/text-align) —
+    ;; każdy element domyślnie startuje od 100 (w pełni kryjące).
+    let sheet: css::Stylesheet = css::parse("div { opacity: 0.5; }")
+    let parent: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(parent.opacity, 50)
+    let child: style::ComputedStyle = style::resolve(css::Stylesheet { rules: [] }, "span", "", [], parent)
+    assert_eq(child.opacity, 100)
+end
+
+#[test]
+fn test_opacity_percent_syntax() is
+    let sheet: css::Stylesheet = css::parse("div { opacity: 30%; }")
+    let st: style::ComputedStyle = style::resolve(sheet, "div", "", [], style::root_style())
+    assert_eq(st.opacity, 30)
+end
+
+;; ---------- layout::layout — rozbudowa: text-align w praktyce ----------
+
+#[test]
+fn test_layout_center_aligns_short_line() is
+    ;; viewport szeroki (400px), krótki tekst wyśrodkowany w bloku na
+    ;; całą szerokość -> x pudełka tekstu powinien być > 0 (przesunięty
+    ;; od lewej krawędzi), nie stać przy inner_x jak przy "left".
+    let dom: dom::Dom = dom::parse("<div><p>hi</p></div>")
+    let sheet: css::Stylesheet = css::parse("div { width: 400px; } p { text-align: center; }")
+    let boxes: [layout::LayoutBox] = layout::layout(dom, sheet, 400, -1)
+    let mut found_x: int = -1
+    let count: int = array_len(boxes)
+    let mut i: int = 0
+    while i < count is
+        if boxes[i].text == "hi" is found_x = boxes[i].x end
+        i += 1
+    end
+    assert_true(found_x > 0)
+end
+
+;; ---------- css.h# — rozbudowa: selektory potomka/dziecka, grupowanie ----------
+
+#[test]
+fn test_css_group_selector_comma() is
+    let sheet: css::Stylesheet = css::parse(".a, .b { color: red; }")
+    ;; skrót przecinkowy rozwija się do dwóch osobnych reguł
+    assert_eq(array_len(sheet.rules), 2)
+    assert_eq(sheet.rules[0].selector, ".a")
+    assert_eq(sheet.rules[1].selector, ".b")
+end
+
+#[test]
+fn test_css_tokenize_descendant_selector() is
+    let path: css::SelectorPath = css::tokenize_selector(".card p")
+    assert_eq(array_len(path.sels), 2)
+    assert_eq(path.sels[0], ".card")
+    assert_eq(path.sels[1], "p")
+    assert_eq(path.combs[1], "desc")
+end
+
+#[test]
+fn test_css_tokenize_child_selector() is
+    let path: css::SelectorPath = css::tokenize_selector(".a > .b")
+    assert_eq(array_len(path.sels), 2)
+    assert_eq(path.combs[1], "child")
+end
+
+#[test]
+fn test_css_descendant_selector_matches_nested() is
+    ;; <div class="card"><p>x</p></div> — .card p powinno dopasować <p>,
+    ;; niezależnie od tego, jak głęboko jest zagnieżdżone.
+    let dom: dom::Dom = dom::parse("<div class=\"card\"><p>x</p></div>")
+    let sheet: css::Stylesheet = css::parse(".card p { color: red; }")
+    ;; węzeł <p> — znajdź go po tagu w drzewie
+    let mut p_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].tag == "p" is p_id = i end
+        i += 1
+    end
+    assert_true(p_id >= 0)
+    let st: style::ComputedStyle = style::resolve_ctx(sheet, dom, p_id, style::root_style(), css::no_interaction())
+    assert_eq(st.color.r, 255)
+end
+
+#[test]
+fn test_css_child_selector_does_not_match_grandchild() is
+    ;; ".a > .b" nie powinno złapać ".b" zagnieżdżonego głębiej niż
+    ;; bezpośrednie dziecko ".a".
+    let dom: dom::Dom = dom::parse("<div class=\"a\"><div><p class=\"b\">x</p></div></div>")
+    let sheet: css::Stylesheet = css::parse(".a > .b { color: red; }")
+    let mut p_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].tag == "p" is p_id = i end
+        i += 1
+    end
+    let st: style::ComputedStyle = style::resolve_ctx(sheet, dom, p_id, style::root_style(), css::no_interaction())
+    ;; kolor domyślny (dziedziczony/root), nie czerwony — reguła nie trafiła
+    assert_true(st.color.r != 255)
+end
+
+#[test]
+fn test_css_flat_api_ignores_compound_selector() is
+    ;; Stare "płaskie" `matching_decls` (bez drzewa) musi bezpiecznie
+    ;; NIE dopasować selektora złożonego, zamiast fałszywie trafić.
+    let sheet: css::Stylesheet = css::parse(".card p { color: red; }")
+    let decls: [css::CssDecl] = css::matching_decls(sheet, "p", "", ["card"])
+    assert_eq(array_len(decls), 0)
+end
+
+;; ---------- css.h# — rozbudowa: kombinatory rodzeństwa (+/~) ----------
+
+#[test]
+fn test_css_tokenize_adjacent_sibling() is
+    let path: css::SelectorPath = css::tokenize_selector(".a + .b")
+    assert_eq(array_len(path.sels), 2)
+    assert_eq(path.combs[1], "adjacent")
+end
+
+#[test]
+fn test_css_tokenize_general_sibling() is
+    let path: css::SelectorPath = css::tokenize_selector(".a ~ .b")
+    assert_eq(path.combs[1], "general_sibling")
+end
+
+#[test]
+fn test_css_adjacent_sibling_matches_immediate_next() is
+    ;; <div class="a"></div><p class="b">x</p><p class="c">y</p> —
+    ;; ".a + p" powinno złapać TYLKO pierwsze <p> (bezpośrednio po .a).
+    let dom: dom::Dom = dom::parse(
+        "<div><div class=\"a\"></div><p class=\"b\">x</p><p class=\"c\">y</p></div>")
+    let sheet: css::Stylesheet = css::parse(".a + p { color: red; }")
+    let mut b_id: int = -1
+    let mut c_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].attr_class == "b" is b_id = i end
+        if dom.nodes[i].attr_class == "c" is c_id = i end
+        i += 1
+    end
+    let st_b: style::ComputedStyle = style::resolve_ctx(sheet, dom, b_id, style::root_style(), css::no_interaction())
+    let st_c: style::ComputedStyle = style::resolve_ctx(sheet, dom, c_id, style::root_style(), css::no_interaction())
+    assert_eq(st_b.color.r, 255)
+    assert_true(st_c.color.r != 255)
+end
+
+#[test]
+fn test_css_general_sibling_matches_any_later() is
+    ;; ".a ~ p" powinno złapać OBA <p> po .a, nie tylko najbliższe.
+    let dom: dom::Dom = dom::parse(
+        "<div><div class=\"a\"></div><p class=\"b\">x</p><p class=\"c\">y</p></div>")
+    let sheet: css::Stylesheet = css::parse(".a ~ p { color: red; }")
+    let mut c_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].attr_class == "c" is c_id = i end
+        i += 1
+    end
+    let st_c: style::ComputedStyle = style::resolve_ctx(sheet, dom, c_id, style::root_style(), css::no_interaction())
+    assert_eq(st_c.color.r, 255)
+end
+
+;; ---------- css.h# — rozbudowa: pseudoklasy :hover / :focus ----------
+
+#[test]
+fn test_css_hover_matches_only_hovered_node() is
+    let dom: dom::Dom = dom::parse("<div class=\"btn\">x</div>")
+    let sheet: css::Stylesheet = css::parse(".btn:hover { color: red; }")
+    let btn_id: int = 1  ;; nodes[0]=root, nodes[1]=div.btn
+    let not_hovered: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, btn_id, style::root_style(), css::no_interaction())
+    assert_true(not_hovered.color.r != 255)
+
+    let hovered: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, btn_id, style::root_style(),
+        css::InteractionState { hovered_id: btn_id, focused_id: "", active_id: -1 })
+    assert_eq(hovered.color.r, 255)
+end
+
+#[test]
+fn test_css_focus_matches_by_attr_id() is
+    let dom: dom::Dom = dom::parse("<input id=\"name\" />")
+    let sheet: css::Stylesheet = css::parse("#name:focus { border-color: #ff0000; }")
+    let input_id: int = 1
+    let unfocused: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, input_id, style::root_style(), css::no_interaction())
+    assert_true(unfocused.border_color.r != 255)
+
+    let focused: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, input_id, style::root_style(),
+        css::InteractionState { hovered_id: -1, focused_id: "name", active_id: -1 })
+    assert_eq(focused.border_color.r, 255)
+end
+
+#[test]
+fn test_css_unknown_pseudo_never_matches() is
+    ;; :visited nie jest wspierane — musi bezpiecznie NIGDY nie
+    ;; dopasować, zamiast zgadywać albo dopasować zawsze.
+    let dom: dom::Dom = dom::parse("<div class=\"btn\">x</div>")
+    let sheet: css::Stylesheet = css::parse(".btn:visited { color: red; }")
+    let btn_id: int = 1
+    let st: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, btn_id, style::root_style(),
+        css::InteractionState { hovered_id: btn_id, focused_id: "", active_id: btn_id })
+    assert_true(st.color.r != 255)
+end
+
+;; ---------- css.h# — rozbudowa: pseudoklasa :active ----------
+
+#[test]
+fn test_css_active_matches_only_pressed_node() is
+    let dom: dom::Dom = dom::parse("<div class=\"btn\">x</div>")
+    let sheet: css::Stylesheet = css::parse(".btn:active { background: #ff0000; }")
+    let btn_id: int = 1
+
+    let not_pressed: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, btn_id, style::root_style(), css::no_interaction())
+    assert_true(!not_pressed.has_bg)
+
+    let pressed: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, btn_id, style::root_style(),
+        css::InteractionState { hovered_id: -1, focused_id: "", active_id: btn_id })
+    assert_true(pressed.has_bg)
+    assert_eq(pressed.background.r, 255)
+end
+
+#[test]
+fn test_css_active_independent_from_hover() is
+    ;; hover i active to dwa niezależne stany — samo :hover (bez
+    ;; :active) nie powinno dopasować reguły ".btn:active".
+    let dom: dom::Dom = dom::parse("<div class=\"btn\">x</div>")
+    let sheet: css::Stylesheet = css::parse(".btn:active { color: red; }")
+    let btn_id: int = 1
+    let hovered_not_active: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, btn_id, style::root_style(),
+        css::InteractionState { hovered_id: btn_id, focused_id: "", active_id: -1 })
+    assert_true(hovered_not_active.color.r != 255)
+end
+
+;; ---------- css.h# — rozbudowa: pseudoklasa :nth-child ----------
+
+#[test]
+fn test_nth_expr_odd_even() is
+    let odd: css::NthExpr = css::parse_nth_expr("odd")
+    assert_eq(odd.a, 2)
+    assert_eq(odd.b, 1)
+    let even: css::NthExpr = css::parse_nth_expr("even")
+    assert_eq(even.a, 2)
+    assert_eq(even.b, 0)
+end
+
+#[test]
+fn test_nth_expr_plain_number() is
+    let e: css::NthExpr = css::parse_nth_expr("3")
+    assert_eq(e.a, 0)
+    assert_eq(e.b, 3)
+    assert_true(css::nth_matches(e, 3))
+    assert_true(!css::nth_matches(e, 4))
+end
+
+#[test]
+fn test_nth_expr_an_plus_b() is
+    let e: css::NthExpr = css::parse_nth_expr("2n+1")
+    assert_eq(e.a, 2)
+    assert_eq(e.b, 1)
+    ;; 2n+1 dla n=0,1,2,... -> 1, 3, 5, 7 ...
+    assert_true(css::nth_matches(e, 1))
+    assert_true(!css::nth_matches(e, 2))
+    assert_true(css::nth_matches(e, 5))
+end
+
+#[test]
+fn test_nth_expr_bare_n() is
+    ;; "n" bez współczynnika -> a=1,b=0 -> dopasowuje WSZYSTKO (n>=1)
+    let e: css::NthExpr = css::parse_nth_expr("n")
+    assert_eq(e.a, 1)
+    assert_eq(e.b, 0)
+    assert_true(css::nth_matches(e, 1))
+    assert_true(css::nth_matches(e, 100))
+end
+
+#[test]
+fn test_nth_expr_negative_a_first_n() is
+    ;; "-n+3" -> pierwsze 3 pozycje (typowy idiom "pierwsze N elementów")
+    let e: css::NthExpr = css::parse_nth_expr("-n+3")
+    assert_eq(e.a, -1)
+    assert_eq(e.b, 3)
+    assert_true(css::nth_matches(e, 1))
+    assert_true(css::nth_matches(e, 3))
+    assert_true(!css::nth_matches(e, 4))
+end
+
+#[test]
+fn test_nth_child_index_skips_text_nodes() is
+    ;; realny tekst (nie whitespace — ten dom::parse i tak by wyciął,
+    ;; patrz komentarz w dom.h#) między elementami NIE powinien liczyć
+    ;; się do pozycji :nth-child, dokładnie jak w prawdziwym CSS, które
+    ;; liczy tylko elementy.
+    let dom: dom::Dom = dom::parse(
+        "<ul><li>a</li>coś pomiędzy<li>b</li>i jeszcze<li>c</li></ul>")
+    let sheet: css::Stylesheet = css::parse("li:nth-child(2) { color: red; }")
+    let mut ids: [int] = []
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].tag == "li" is ids = array_push(ids, i) end
+        i += 1
+    end
+    assert_eq(array_len(ids), 3)
+    let st_first: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, ids[0], style::root_style(), css::no_interaction())
+    let st_second: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, ids[1], style::root_style(), css::no_interaction())
+    let st_third: style::ComputedStyle = style::resolve_ctx(
+        sheet, dom, ids[2], style::root_style(), css::no_interaction())
+    assert_true(st_first.color.r != 255)
+    assert_eq(st_second.color.r, 255)
+    assert_true(st_third.color.r != 255)
+end
+
+#[test]
+fn test_nth_child_odd_matches_alternating() is
+    let dom: dom::Dom = dom::parse(
+        "<ul><li>a</li><li>b</li><li>c</li><li>d</li></ul>")
+    let sheet: css::Stylesheet = css::parse("li:nth-child(odd) { background: #ff0000; }")
+    let mut ids: [int] = []
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].tag == "li" is ids = array_push(ids, i) end
+        i += 1
+    end
+    let st1: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[0], style::root_style(), css::no_interaction())
+    let st2: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[1], style::root_style(), css::no_interaction())
+    let st3: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[2], style::root_style(), css::no_interaction())
+    let st4: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[3], style::root_style(), css::no_interaction())
+    assert_true(st1.has_bg)
+    assert_true(!st2.has_bg)
+    assert_true(st3.has_bg)
+    assert_true(!st4.has_bg)
+end
+
+#[test]
+fn test_css_plus_inside_nth_child_arg_not_treated_as_combinator() is
+    ;; regresja: normalize_combinators musi zostawić "+" wewnątrz
+    ;; "nth-child(2n+1)" w spokoju — to nie jest kombinator "+" (sąsiad),
+    ;; tylko część formuły An+B.
+    let path: css::SelectorPath = css::tokenize_selector("li:nth-child(2n+1)")
+    assert_eq(array_len(path.sels), 1)
+    assert_eq(path.sels[0], "li:nth-child(2n+1)")
+end
+
+;; ---------- css.h# — rozbudowa: :first-child / :last-child / :only-child / :nth-last-child ----------
+
+#[test]
+fn test_first_last_child() is
+    let dom: dom::Dom = dom::parse("<ul><li>a</li><li>b</li><li>c</li></ul>")
+    let sheet: css::Stylesheet = css::parse(
+        "li:first-child { color: red; } li:last-child { background: #00ff00; }")
+    let mut ids: [int] = []
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].tag == "li" is ids = array_push(ids, i) end
+        i += 1
+    end
+    let st_first: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[0], style::root_style(), css::no_interaction())
+    let st_mid: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[1], style::root_style(), css::no_interaction())
+    let st_last: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[2], style::root_style(), css::no_interaction())
+
+    assert_eq(st_first.color.r, 255)
+    assert_true(!st_first.has_bg)
+
+    assert_true(st_mid.color.r != 255)
+    assert_true(!st_mid.has_bg)
+
+    assert_true(st_last.color.r != 255)
+    assert_true(st_last.has_bg)
+end
+
+#[test]
+fn test_only_child_matches_single_child_only() is
+    let dom: dom::Dom = dom::parse("<div><p>solo</p></div>")
+    let sheet: css::Stylesheet = css::parse("p:only-child { color: red; }")
+    let mut p_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].tag == "p" is p_id = i end
+        i += 1
+    end
+    let st: style::ComputedStyle = style::resolve_ctx(sheet, dom, p_id, style::root_style(), css::no_interaction())
+    assert_eq(st.color.r, 255)
+end
+
+#[test]
+fn test_only_child_does_not_match_when_siblings_present() is
+    let dom: dom::Dom = dom::parse("<div><p>a</p><p>b</p></div>")
+    let sheet: css::Stylesheet = css::parse("p:only-child { color: red; }")
+    let mut ids: [int] = []
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].tag == "p" is ids = array_push(ids, i) end
+        i += 1
+    end
+    let st: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[0], style::root_style(), css::no_interaction())
+    assert_true(st.color.r != 255)
+end
+
+#[test]
+fn test_nth_last_child_matches_from_end() is
+    ;; :nth-last-child(1) to zawsze OSTATNI element — odpowiednik
+    ;; :last-child, tylko wyrażony formułą.
+    let dom: dom::Dom = dom::parse("<ul><li>a</li><li>b</li><li>c</li></ul>")
+    let sheet: css::Stylesheet = css::parse("li:nth-last-child(1) { color: red; }")
+    let mut ids: [int] = []
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].tag == "li" is ids = array_push(ids, i) end
+        i += 1
+    end
+    let st_first: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[0], style::root_style(), css::no_interaction())
+    let st_last: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[2], style::root_style(), css::no_interaction())
+    assert_true(st_first.color.r != 255)
+    assert_eq(st_last.color.r, 255)
+end
+
+#[test]
+fn test_nth_last_child_odd_from_end() is
+    ;; :nth-last-child(odd) liczy nieparzyste pozycje OD KOŃCA:
+    ;; dla 4 elementów [a,b,c,d] -> od końca to d=1,c=2,b=3,a=4 ->
+    ;; nieparzyste to d i b.
+    let dom: dom::Dom = dom::parse("<ul><li>a</li><li>b</li><li>c</li><li>d</li></ul>")
+    let sheet: css::Stylesheet = css::parse("li:nth-last-child(odd) { background: #ff0000; }")
+    let mut ids: [int] = []
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].tag == "li" is ids = array_push(ids, i) end
+        i += 1
+    end
+    let sa: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[0], style::root_style(), css::no_interaction())
+    let sb: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[1], style::root_style(), css::no_interaction())
+    let sc: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[2], style::root_style(), css::no_interaction())
+    let sd: style::ComputedStyle = style::resolve_ctx(sheet, dom, ids[3], style::root_style(), css::no_interaction())
+    assert_true(!sa.has_bg)
+    assert_true(sb.has_bg)
+    assert_true(!sc.has_bg)
+    assert_true(sd.has_bg)
+end
+
+;; ---------- css.h# / paint.h# — rozbudowa: :hover/:active propagują się do przodków ----------
+
+#[test]
+fn test_hover_propagates_from_child_to_ancestor() is
+    ;; najechanie na TEKST wewnątrz .btn (dziecko) musi dopasować regułę
+    ;; ".btn:hover" na SAMYM .btn, nie tylko dosłowny węzeł tekstowy —
+    ;; dokładnie jak w prawdziwej przeglądarce.
+    let dom: dom::Dom = dom::parse("<div class=\"btn\"><span>Kliknij</span></div>")
+    let sheet: css::Stylesheet = css::parse(".btn:hover { background: #ff0000; }")
+    let mut btn_id: int = -1
+    let mut span_id: int = -1
+    let mut text_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].attr_class == "btn" is btn_id = i end
+        if dom.nodes[i].tag == "span" is span_id = i end
+        if dom.nodes[i].tag == "text" is text_id = i end
+        i += 1
+    end
+    assert_true(btn_id >= 0 && span_id >= 0 && text_id >= 0)
+
+    ;; "trafiony" (hovered_id) to najgłębszy węzeł — tekst wewnątrz span
+    let interaction: css::InteractionState = css::InteractionState {
+        hovered_id: text_id, focused_id: "", active_id: -1
+    }
+    let btn_style: style::ComputedStyle = style::resolve_ctx(sheet, dom, btn_id, style::root_style(), interaction)
+    assert_true(btn_style.has_bg)
+end
+
+#[test]
+fn test_hover_does_not_propagate_to_unrelated_sibling() is
+    let dom: dom::Dom = dom::parse(
+        "<div><div class=\"a\"><span>x</span></div><div class=\"b\">y</div></div>")
+    let sheet: css::Stylesheet = css::parse(".b:hover { background: #ff0000; }")
+    let mut span_text_id: int = -1
+    let mut b_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].attr_class == "b" is b_id = i end
+        if dom.nodes[i].tag == "text" && dom.nodes[dom.nodes[i].parent].tag == "span" is span_text_id = i end
+        i += 1
+    end
+    ;; hover jest w gałęzi .a, nie .b -> .b:hover NIE powinno dopasować
+    let interaction: css::InteractionState = css::InteractionState {
+        hovered_id: span_text_id, focused_id: "", active_id: -1
+    }
+    let b_style: style::ComputedStyle = style::resolve_ctx(sheet, dom, b_id, style::root_style(), interaction)
+    assert_true(!b_style.has_bg)
+end
+
+#[test]
+fn test_focus_does_not_propagate_to_ancestor() is
+    ;; w odróżnieniu od :hover/:active, :focus NIE propaguje się w górę
+    ;; drzewa — dotyczy tylko dokładnie tego elementu (po attr_id).
+    let dom: dom::Dom = dom::parse("<div class=\"wrap\"><input id=\"name\" /></div>")
+    let sheet: css::Stylesheet = css::parse(".wrap:focus { background: #ff0000; }")
+    let mut wrap_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].attr_class == "wrap" is wrap_id = i end
+        i += 1
+    end
+    let interaction: css::InteractionState = css::InteractionState {
+        hovered_id: -1, focused_id: "name", active_id: -1
+    }
+    let wrap_style: style::ComputedStyle = style::resolve_ctx(sheet, dom, wrap_id, style::root_style(), interaction)
+    assert_true(!wrap_style.has_bg)
+end
+
+;; ---------- css.h# — rozbudowa: :focus-within ----------
+
+#[test]
+fn test_focus_within_matches_ancestor_of_focused_input() is
+    ;; w odróżnieniu od zwykłego :focus (test wyżej), :focus-within NA
+    ;; TYM SAMYM DOM dopasowuje .wrap, bo .wrap jest przodkiem
+    ;; focusowanego <input>.
+    let dom: dom::Dom = dom::parse("<div class=\"wrap\"><input id=\"name\" /></div>")
+    let sheet: css::Stylesheet = css::parse(".wrap:focus-within { background: #ff0000; }")
+    let mut wrap_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].attr_class == "wrap" is wrap_id = i end
+        i += 1
+    end
+    let interaction: css::InteractionState = css::InteractionState {
+        hovered_id: -1, focused_id: "name", active_id: -1
+    }
+    let wrap_style: style::ComputedStyle = style::resolve_ctx(sheet, dom, wrap_id, style::root_style(), interaction)
+    assert_true(wrap_style.has_bg)
+end
+
+#[test]
+fn test_focus_within_no_match_when_nothing_focused() is
+    let dom: dom::Dom = dom::parse("<div class=\"wrap\"><input id=\"name\" /></div>")
+    let sheet: css::Stylesheet = css::parse(".wrap:focus-within { background: #ff0000; }")
+    let mut wrap_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].attr_class == "wrap" is wrap_id = i end
+        i += 1
+    end
+    let wrap_style: style::ComputedStyle = style::resolve_ctx(sheet, dom, wrap_id, style::root_style(), css::no_interaction())
+    assert_true(!wrap_style.has_bg)
+end
+
+#[test]
+fn test_focus_within_no_match_for_unrelated_branch() is
+    ;; focus jest w gałęzi .a, więc .b:focus-within nie powinno dopasować
+    let dom: dom::Dom = dom::parse(
+        "<div><div class=\"a\"><input id=\"x\" /></div><div class=\"b\"><input id=\"y\" /></div></div>")
+    let sheet: css::Stylesheet = css::parse(".b:focus-within { background: #ff0000; }")
+    let mut a_id: int = -1
+    let mut b_id: int = -1
+    let count: int = array_len(dom.nodes)
+    let mut i: int = 0
+    while i < count is
+        if dom.nodes[i].attr_class == "a" is a_id = i end
+        if dom.nodes[i].attr_class == "b" is b_id = i end
+        i += 1
+    end
+    let interaction: css::InteractionState = css::InteractionState {
+        hovered_id: -1, focused_id: "x", active_id: -1
+    }
+    let a_style: style::ComputedStyle = style::resolve_ctx(sheet, dom, a_id, style::root_style(), interaction)
+    let b_style: style::ComputedStyle = style::resolve_ctx(sheet, dom, b_id, style::root_style(), interaction)
+    assert_true(!a_style.has_bg)   ;; reguła jest na .b, nie .a — .a nie powinno dostać tła niezależnie
+    assert_true(!b_style.has_bg)   ;; focus jest w .x (gałąź .a), nie w .b
+end
+
+;; ---------- paint.h# — rozbudowa: hit_test_any (bez filtra on-click) ----------
+
+#[test]
+fn test_hit_test_any_matches_element_without_on_click() is
+    let dom: dom::Dom = dom::parse("<div class=\"card\">x</div>")
+    let sheet: css::Stylesheet = css::parse(".card { width: 100px; height: 50px; }")
+    let boxes: [layout::LayoutBox] = layout::layout(dom, sheet, 400, -1)
+    ;; punkt (10,10) leży w prostokącie karty (0,0,100,50); karta nie
+    ;; ma on-click, więc stary `hit_test` by tego NIE złapał.
+    let hit: int = paint::hit_test_any(boxes, 10, 10)
+    assert_true(hit >= 0)
+end
+
+#[test]
+fn test_hit_test_any_returns_minus_one_outside_all_boxes() is
+    let dom: dom::Dom = dom::parse("<div class=\"card\">x</div>")
+    let sheet: css::Stylesheet = css::parse(".card { width: 10px; height: 10px; }")
+    let boxes: [layout::LayoutBox] = layout::layout(dom, sheet, 400, -1)
+    let hit: int = paint::hit_test_any(boxes, 999, 999)
+    assert_eq(hit, -1)
+end
+
+
 
 #[test]
 fn test_json_roundtrip_flat() is
@@ -106,4 +998,28 @@ fn test_json_builder_and_stringify() is
     let reparsed: json::JsonValue = json::parse(out)
     assert_eq(json::as_num(json::get(reparsed, "count")), 3.0)
     assert_eq(json::get_str(reparsed, "label"), "x")
+end
+
+;; ---------- engine::paint — rozbudowa: alfa dla tekstu/obramowań/obrazków ----------
+
+#[test]
+fn test_scaled_alpha_full_opacity_unchanged() is
+    assert_eq(paint::scaled_alpha(255, 100), 255)
+end
+
+#[test]
+fn test_scaled_alpha_zero_opacity_is_zero() is
+    assert_eq(paint::scaled_alpha(255, 0), 0)
+end
+
+#[test]
+fn test_scaled_alpha_half_opacity() is
+    assert_eq(paint::scaled_alpha(200, 50), 100)
+end
+
+#[test]
+fn test_scaled_alpha_preserves_base_alpha_ratio() is
+    ;; kolor już częściowo przezroczysty (np. z przyszłego rgba()) razy
+    ;; opacity elementu — obie przezroczystości się mnożą, nie zastępują.
+    assert_eq(paint::scaled_alpha(128, 50), 64)
 end

@@ -1,6 +1,6 @@
 [package]
 -> name        => my-silver-app
--> version     => 0.1.0
+-> version     => 0.2.0
 -> description => Aplikacja desktopowa zbudowana z Silver
 -> author      => Bytes Developers
 -> license     => MIT
@@ -11,4 +11,4 @@
 -> output => build/my-silver-app
 
 [deps]
--> silver => git
+-> silver => v0.3

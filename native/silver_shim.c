@@ -158,25 +158,43 @@ int silver_clear(int h, int r, int g, int b) {
 
 int silver_fill_rect(int h, int x, int y, int w, int rh, int r, int g, int b, int a) {
     if (h < 0 || h >= SILVER_MAX_WINDOWS || !g_windows[h].used) return 0;
+    /* v0.2: naprawiony błąd — `a` był przyjmowany od zawsze, ale bez
+     * włączonego blend mode SDL2 go IGNORUJE (SDL_BLENDMODE_NONE =
+     * dest = src, piksel w pełni kryjący niezależnie od alfy). Czyli
+     * `opacity` na tle elementu najpewniej nigdy realnie nie działało
+     * (nawet po dodaniu wsparcia w engine/style.h# i engine/paint.h# —
+     * kod H# przekazywał poprawną wartość, ale native SDL i tak ją
+     * odrzucał). Patrz ROADMAP.md. */
+    SDL_SetRenderDrawBlendMode(g_windows[h].ren, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(g_windows[h].ren, r, g, b, a);
     SDL_Rect rect = { x, y, w, rh };
     SDL_RenderFillRect(g_windows[h].ren, &rect);
     return 1;
 }
 
-int silver_stroke_rect(int h, int x, int y, int w, int rh, int r, int g, int b) {
+int silver_stroke_rect(int h, int x, int y, int w, int rh, int r, int g, int b, int a) {
     if (h < 0 || h >= SILVER_MAX_WINDOWS || !g_windows[h].used) return 0;
-    SDL_SetRenderDrawColor(g_windows[h].ren, r, g, b, 255);
+    /* v0.2: kanał alfa (wcześniej stroke_rect zawsze rysował w pełni
+     * kryjąco — patrz ROADMAP.md, "Alfa dla tekstu/obramowań/obrazków"
+     * była udokumentowanym ograniczeniem opacity aż do tej zmiany).
+     * SDL2 wymaga włączonego blend mode, żeby alfa < 255 w ogóle coś
+     * dała (domyślny SDL_BLENDMODE_NONE ją ignoruje). */
+    SDL_SetRenderDrawBlendMode(g_windows[h].ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(g_windows[h].ren, r, g, b, a);
     SDL_Rect rect = { x, y, w, rh };
     SDL_RenderDrawRect(g_windows[h].ren, &rect);
     return 1;
 }
 
-/* ---- silver_draw_text(handle, x, y, text, r, g, b) -> wysokość tekstu w px ---- */
-int silver_draw_text(int h, int x, int y, const char *text, int r, int g, int b) {
+/* ---- silver_draw_text(handle, x, y, text, r, g, b, a) -> wysokość tekstu w px ---- */
+int silver_draw_text(int h, int x, int y, const char *text, int r, int g, int b, int a) {
     if (h < 0 || h >= SILVER_MAX_WINDOWS || !g_windows[h].used) return 0;
     if (!g_windows[h].font || !text || text[0] == '\0') return 0;
 
+    /* v0.2: `a` w kolorze glifów TTF_RenderUTF8_Blended nie wystarcza
+     * samo w sobie (blending glifu z tłem surface'u, nie z ekranem) —
+     * potrzebny jeszcze SDL_SetTextureAlphaMod na finalnej teksturze,
+     * żeby faktycznie przenikało przez to, co już narysowane pod spodem. */
     SDL_Color col = { (Uint8)r, (Uint8)g, (Uint8)b, 255 };
     SDL_Surface *surf = TTF_RenderUTF8_Blended(g_windows[h].font, text, col);
     if (!surf) return 0;
@@ -185,6 +203,8 @@ int silver_draw_text(int h, int x, int y, const char *text, int r, int g, int b)
     SDL_Rect dst = { x, y, surf->w, surf->h };
     SDL_FreeSurface(surf);
     if (tex) {
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureAlphaMod(tex, (Uint8)a);
         SDL_RenderCopy(g_windows[h].ren, tex, NULL, &dst);
         SDL_DestroyTexture(tex);
     }
@@ -259,11 +279,18 @@ int silver_image_height(int h, const char *path) {
     return img ? img->h : 0;
 }
 
-/* ---- silver_draw_image(handle, path, x, y, w, h) -> bool ---- */
-int silver_draw_image(int h, const char *path, int x, int y, int w, int rh) {
+/* ---- silver_draw_image(handle, path, x, y, w, h, a) -> bool ----
+ * `img->tex` jest cache'owana per-ścieżka (find_or_load_image) i może
+ * być tą samą teksturą narysowaną wielokrotnie w tej samej klatce z
+ * różną alfą (ten sam plik w dwóch miejscach o różnym opacity) —
+ * bezpieczne, bo SDL2 renderuje synchronicznie: AlphaMod ustawiony
+ * tuż przed RenderCopy obowiązuje tylko dla TEGO wywołania. */
+int silver_draw_image(int h, const char *path, int x, int y, int w, int rh, int a) {
     if (h < 0 || h >= SILVER_MAX_WINDOWS || !g_windows[h].used) return 0;
     SilverImage *img = find_or_load_image(h, path);
     if (!img) return 0;
+    SDL_SetTextureBlendMode(img->tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureAlphaMod(img->tex, (Uint8)a);
     SDL_Rect dst = { x, y, w, rh };
     SDL_RenderCopy(g_windows[h].ren, img->tex, NULL, &dst);
     return 1;
@@ -297,8 +324,8 @@ int silver_set_title(int h, const char *title) {
 }
 
 /* dwie osobne funkcje zamiast out-parametrów wskaźnikowych — H# FFI
- * (extern dynamic) wspiera tylko typy skalarne w sygnaturach, więc
- * unikamy `int*` jako parametru wyjściowego. */
+ * (extern static/dynamic, oba warianty) wspiera tylko typy skalarne w
+ * sygnaturach, więc unikamy `int*` jako parametru wyjściowego. */
 int silver_get_width(int h) {
     if (h < 0 || h >= SILVER_MAX_WINDOWS || !g_windows[h].used) return 0;
     int w = 0, hh = 0;

@@ -1,4 +1,5 @@
 use "silver -> engine -> css" from "css"
+use "silver -> engine -> dom" from "dom"
 use "std -> conv" from "conv"
 
 pub struct Color is
@@ -8,6 +9,13 @@ pub struct Color is
     pub a: int
 end
 
+pub struct BoxSides is
+    pub top:    int
+    pub right:  int
+    pub bottom: int
+    pub left:   int
+end
+
 pub struct ComputedStyle is
     pub display:    string   ;; "block" | "inline" | "none" | "flex"
     pub color:      Color
@@ -15,15 +23,25 @@ pub struct ComputedStyle is
     pub has_bg:     bool
     pub width:      int      ;; px, -1 = auto (wypełnij rodzica / dopasuj treść)
     pub height:     int      ;; px, -1 = auto
-    pub padding:    int      ;; px, jednolite z każdej strony (v0.1)
-    pub margin:     int      ;; px, jednolite z każdej strony (v0.1)
+    pub padding:    int      ;; px, jednolite (kept dla wstecznej zgodności — top+bottom lub left+right, patrz pad_*)
+    pub margin:     int      ;; px, jednolite (kept dla wstecznej zgodności, patrz mar_*)
+    pub pad_top:    int      ;; px — rozbudowa: padding per-strona (shorthand 1/2/4 wartości + padding-*)
+    pub pad_right:  int
+    pub pad_bottom: int
+    pub pad_left:   int
+    pub mar_top:    int      ;; px — rozbudowa: margin per-strona (shorthand 1/2/4 wartości + margin-*)
+    pub mar_right:  int
+    pub mar_bottom: int
+    pub mar_left:   int
     pub font_size:  int      ;; px
     pub border:     int      ;; px, 0 = brak
     pub border_color: Color
-    pub gap:        int      ;; px, odstęp między dziećmi flex (v0.3)
+    pub gap:        int      ;; px, odstęp między dziećmi flex
     pub flex_dir:   string    ;; "row" | "column" (tylko gdy display == "flex")
     pub justify:    string     ;; "flex-start" | "center" | "space-between" | "flex-end"
     pub align:      string      ;; "flex-start" | "center" | "flex-end" (cross-axis)
+    pub text_align: string       ;; rozbudowa: "left" | "center" | "right" (dziedziczone)
+    pub opacity:    int            ;; rozbudowa: 0-100 (procent), 100 = w pełni kryjący
 end
 
 ;; Styl "korzenia dokumentu" — jedyne miejsce, gdzie kolor/font-size
@@ -37,10 +55,13 @@ pub fn root_style() -> ComputedStyle is
         has_bg: false,
         width: -1, height: -1,
         padding: 0, margin: 0,
+        pad_top: 0, pad_right: 0, pad_bottom: 0, pad_left: 0,
+        mar_top: 0, mar_right: 0, mar_bottom: 0, mar_left: 0,
         font_size: 16,
         border: 0,
         border_color: Color { r: 0, g: 0, b: 0, a: 255 },
-        gap: 0, flex_dir: "row", justify: "flex-start", align: "flex-start"
+        gap: 0, flex_dir: "row", justify: "flex-start", align: "flex-start",
+        text_align: "left", opacity: 100
     }
 end
 
@@ -64,17 +85,188 @@ fn default_style_for(tag: string, inherited: ComputedStyle) -> ComputedStyle is
         has_bg: false,
         width: -1, height: -1,
         padding: 0, margin: 0,
+        pad_top: 0, pad_right: 0, pad_bottom: 0, pad_left: 0,
+        mar_top: 0, mar_right: 0, mar_bottom: 0, mar_left: 0,
         font_size: fsize,
         border: 0,
         border_color: Color { r: 0, g: 0, b: 0, a: 255 },
-        gap: 0, flex_dir: "row", justify: "flex-start", align: "flex-start"
+        gap: 0, flex_dir: "row", justify: "flex-start", align: "flex-start",
+        text_align: inherited.text_align, opacity: 100
     }
 end
 
-fn parse_px(val: string) -> int is
-    if val == "auto" || val == "" is return -1 end
-    let stripped: string = string_replace(val, "px", "")
+;; Bazowy rozmiar czcionki roota do jednostki `rem` — stały, bo Silver
+;; nie pozwala nadpisać font-size na samym roocie (`style::root_style()`
+;; zawsze zwraca 16, nie ma odpowiednika `<html>` do stylowania).
+pub fn root_font_size() -> int is return 16 end
+
+;; Rozbudowa (ostatnia przed wydaniem v0.2): wspólny parser DŁUGOŚCI CSS
+;; obsługujący `px` (domyślne, też bez jednostki — leniency), `em`
+;; (mnożnik przez `em_base`) i `rem` (mnożnik przez `root_font_size()`).
+;; `auto`/`""` -> -1 (sentinel, jak dotychczas w `parse_px`).
+;;
+;; UPROSZCZENIE: prawdziwy CSS liczy `em` na WŁASNYM obliczonym
+;; font-size elementu (a dla samej właściwości `font-size: ...em` — na
+;; font-size RODZICA). Tutaj wszystkie użycia `em` (łącznie z `font-size`)
+;; dostają ten sam `em_base`, którym `apply_decls` przekazuje
+;; `inherited.font_size` (font-size odziedziczony PRZED zastosowaniem
+;; reguł CSS z tego przebiegu) — dla `font-size: 1.5em` to dokładnie
+;; poprawne zgodnie ze specyfikacją; dla innych właściwości (np.
+;; `padding: 0.5em`) to bardzo bliskie przybliżenie własnego font-size
+;; (różni się tylko, gdy `font-size` jest NADPISYWANY w tej samej
+;; regule co inna właściwość w `em` — rzadki przypadek). Patrz
+;; ROADMAP.md po pełne wyjaśnienie i dlaczego nie robimy tu dwóch
+;; przebiegów po `decls`, żeby to naprawić dokładnie.
+fn parse_len(val: string, em_base: int) -> int is
+    let v: string = string_trim(val)
+    if v == "auto" || v == "" is return -1 end
+    if string_ends_with(v, "rem") is
+        let num: string = string_trim(string_slice(v, 0, string_len(v) - 3))
+        let f: f64 = conv::str_to_float(num)
+        return conv::float_to_int(f * conv::int_to_float(root_font_size()))
+    end
+    if string_ends_with(v, "em") is
+        let num: string = string_trim(string_slice(v, 0, string_len(v) - 2))
+        let f: f64 = conv::str_to_float(num)
+        return conv::float_to_int(f * conv::int_to_float(em_base))
+    end
+    let stripped: string = string_replace(v, "px", "")
     return str_to_int(string_trim(stripped))
+end
+
+fn parse_px(val: string, em_base: int) -> int is
+    return parse_len(val, em_base)
+end
+
+;; Pomocnicza j.w., ale dla `padding` (i marginesu góra/dół — patrz
+;; `parse_margin_tb`), gdzie `auto` nie jest prawidłową wartością CSS
+;; (specyfikacja go po prostu nie definiuje dla `padding`) — traktujemy
+;; je jako 0 zamiast błędu parsowania, żeby jeden zepsuty token nie
+;; wywalił całej reguły. Dla `margin-left`/`margin-right`, gdzie `auto`
+;; MA sens (centrowanie), używamy zamiast tego `parse_margin_lr`
+;; (sentinel -1, patrz niżej).
+fn parse_box_px(val: string, em_base: int) -> int is
+    let n: int = parse_len(val, em_base)
+    if n < 0 is return 0 end
+    return n
+end
+
+;; Rozwija skrót CSS `padding`/`margin` (1, 2, 3 lub 4 wartości
+;; rozdzielone spacją) w cztery boki, dokładnie jak w prawdziwym CSS:
+;;   1 wartość  -> wszystkie boki
+;;   2 wartości -> góra/dół, lewo/prawo
+;;   3 wartości -> góra, lewo/prawo, dół
+;;   4 wartości -> góra, prawo, dół, lewo (zgodnie z ruchem wskazówek zegara)
+;; string_split na wielokrotnych spacjach potrafi dać puste elementy
+;; — odfiltruj je, żeby "10px  20px" (dwie spacje) nie liczyło się
+;; jako 3 wartości. Dzielone przez `parse_box_shorthand` (padding) i
+;; `parse_margin_shorthand` (margin, rozbudowa v0.2 — auto).
+fn split_box_tokens(val: string) -> [string] is
+    let parts: [string] = string_split(string_trim(val), " ")
+    let mut clean: [string] = []
+    let raw_count: int = array_len(parts)
+    let mut i: int = 0
+    while i < raw_count is
+        let p: string = string_trim(parts[i])
+        i += 1
+        if p != "" is clean = array_push(clean, p) end
+    end
+    return clean
+end
+
+fn parse_box_shorthand(val: string, em_base: int) -> BoxSides is
+    let clean: [string] = split_box_tokens(val)
+    let n: int = array_len(clean)
+    if n == 1 is
+        let v: int = parse_box_px(clean[0], em_base)
+        return BoxSides { top: v, right: v, bottom: v, left: v }
+    end
+    if n == 2 is
+        let v: int = parse_box_px(clean[0], em_base)
+        let h: int = parse_box_px(clean[1], em_base)
+        return BoxSides { top: v, right: h, bottom: v, left: h }
+    end
+    if n == 3 is
+        let t: int = parse_box_px(clean[0], em_base)
+        let h: int = parse_box_px(clean[1], em_base)
+        let b: int = parse_box_px(clean[2], em_base)
+        return BoxSides { top: t, right: h, bottom: b, left: h }
+    end
+    if n >= 4 is
+        return BoxSides {
+            top: parse_box_px(clean[0], em_base), right: parse_box_px(clean[1], em_base),
+            bottom: parse_box_px(clean[2], em_base), left: parse_box_px(clean[3], em_base)
+        }
+    end
+    return BoxSides { top: 0, right: 0, bottom: 0, left: 0 }
+end
+
+;; `auto` dla marginesu góra/dół w normalnym przepływie blokowym (bez
+;; pozycjonowania absolutnego, którego Silver nie ma) rozwiązuje się do
+;; 0 — to prawdziwa reguła CSS, nie uproszczenie silnika.
+fn parse_margin_tb(val: string, em_base: int) -> int is
+    return parse_box_px(val, em_base)
+end
+
+;; `auto` dla marginesu lewo/prawo to sentinel -1: sygnalizuje
+;; `engine/layout.h#`, że ten bok ma dostać całą (albo połowę, jeśli
+;; oba boki są `auto`) przestrzeni, która zostaje po odjęciu jawnej
+;; szerokości elementu od dostępnej szerokości rodzica — dokładnie tak
+;; wygląda klasyczne CSS-owe centrowanie `margin: 0 auto`. Rozbudowa v0.2.
+fn parse_margin_lr(val: string, em_base: int) -> int is
+    if string_trim(val) == "auto" is return -1 end
+    return parse_box_px(val, em_base)
+end
+
+;; Jak `parse_box_shorthand`, ale strona lewa/prawa może zostać
+;; sentinelem -1 (`auto`) — patrz `parse_margin_lr`.
+fn parse_margin_shorthand(val: string, em_base: int) -> BoxSides is
+    let clean: [string] = split_box_tokens(val)
+    let n: int = array_len(clean)
+    if n == 1 is
+        return BoxSides {
+            top: parse_margin_tb(clean[0], em_base), right: parse_margin_lr(clean[0], em_base),
+            bottom: parse_margin_tb(clean[0], em_base), left: parse_margin_lr(clean[0], em_base)
+        }
+    end
+    if n == 2 is
+        return BoxSides {
+            top: parse_margin_tb(clean[0], em_base), right: parse_margin_lr(clean[1], em_base),
+            bottom: parse_margin_tb(clean[0], em_base), left: parse_margin_lr(clean[1], em_base)
+        }
+    end
+    if n == 3 is
+        return BoxSides {
+            top: parse_margin_tb(clean[0], em_base), right: parse_margin_lr(clean[1], em_base),
+            bottom: parse_margin_tb(clean[2], em_base), left: parse_margin_lr(clean[1], em_base)
+        }
+    end
+    if n >= 4 is
+        return BoxSides {
+            top: parse_margin_tb(clean[0], em_base), right: parse_margin_lr(clean[1], em_base),
+            bottom: parse_margin_tb(clean[2], em_base), left: parse_margin_lr(clean[3], em_base)
+        }
+    end
+    return BoxSides { top: 0, right: 0, bottom: 0, left: 0 }
+end
+
+;; `opacity` w CSS to 0.0..1.0 (czasem zapisywane jako "50%"); Silver
+;; trzyma to wewnętrznie jako int 0..100, żeby nie mieszać f64 do reszty
+;; box-modelu, który jest cały w int px.
+fn parse_opacity(val: string) -> int is
+    let v: string = string_trim(val)
+    if string_ends_with(v, "%") is
+        let pct: string = string_slice(v, 0, string_len(v) - 1)
+        let n: int = str_to_int(string_trim(pct))
+        if n < 0 is return 0 end
+        if n > 100 is return 100 end
+        return n
+    end
+    let f: f64 = conv::str_to_float(v)
+    let pct: int = conv::float_to_int(f * 100.0 + 0.5)  ;; zaokrąglenie w górę o pół
+    if pct < 0 is return 0 end
+    if pct > 100 is return 100 end
+    return pct
 end
 
 ;; Rozpoznaje: nazwane kolory podstawowe + #rrggbb.
@@ -104,8 +296,33 @@ fn hex_to_int(h: string) -> int is
 end
 
 pub fn resolve(sheet: css::Stylesheet, tag: string, id: string, classes: [string], inherited: ComputedStyle) -> ComputedStyle is
-    let mut st: ComputedStyle = default_style_for(tag, inherited)
+    let st: ComputedStyle = default_style_for(tag, inherited)
     let decls: [css::CssDecl] = css::matching_decls(sheet, tag, id, classes)
+    return apply_decls(st, decls, inherited.font_size)
+end
+
+;; Jak `resolve`, ale drzewo-świadomy: rozwiązuje też selektory złożone
+;; (potomek/dziecko/rodzeństwo, np. ".card p", ".a > .b", ".a + .b",
+;; ".a ~ .b") i pseudoklasy `:hover`/`:focus` przez
+;; `css::matching_decls_ctx` chodzące po `dom::Dom` i sprawdzające
+;; `interaction`. Rozbudowa v0.2 — tego wariantu używa
+;; `engine/layout.h#`; stary `resolve` zostaje bez zmian (m.in. dla
+;; testów, które budują style bez pełnego drzewa DOM).
+pub fn resolve_ctx(sheet: css::Stylesheet, dom: dom::Dom, node_id: int, inherited: ComputedStyle, interaction: css::InteractionState) -> ComputedStyle is
+    let n: dom::DomNode = dom.nodes[node_id]
+    let st: ComputedStyle = default_style_for(n.tag, inherited)
+    let decls: [css::CssDecl] = css::matching_decls_ctx(sheet, dom, node_id, interaction)
+    return apply_decls(st, decls, inherited.font_size)
+end
+
+;; Wspólna logika nakładania deklaracji na już-domyślny styl — dzielona
+;; przez `resolve` i `resolve_ctx`, żeby nie duplikować tej samej
+;; 20-linijkowej gałęzi if/elsif w dwóch miejscach. `em_base` to
+;; font-size RODZICA (`inherited.font_size`), używany do rozwiązywania
+;; jednostek `em` — patrz komentarz przy `parse_len` po dokładne
+;; wyjaśnienie i uproszczenie.
+fn apply_decls(base: ComputedStyle, decls: [css::CssDecl], em_base: int) -> ComputedStyle is
+    let mut st: ComputedStyle = base
     let count: int = array_len(decls)
     let mut i: int = 0
     while i < count is
@@ -116,17 +333,43 @@ pub fn resolve(sheet: css::Stylesheet, tag: string, id: string, classes: [string
         elsif d.prop == "background" || d.prop == "background-color" is
             st.background = parse_color(d.val)
             st.has_bg = d.val != "transparent"
-        elsif d.prop == "width" is st.width = parse_px(d.val)
-        elsif d.prop == "height" is st.height = parse_px(d.val)
-        elsif d.prop == "padding" is st.padding = parse_px(d.val)
-        elsif d.prop == "margin" is st.margin = parse_px(d.val)
-        elsif d.prop == "font-size" is st.font_size = parse_px(d.val)
-        elsif d.prop == "border" is st.border = parse_px(d.val)
+        elsif d.prop == "width" is st.width = parse_px(d.val, em_base)
+        elsif d.prop == "height" is st.height = parse_px(d.val, em_base)
+        elsif d.prop == "padding" is
+            let sides: BoxSides = parse_box_shorthand(d.val, em_base)
+            st.pad_top = sides.top
+            st.pad_right = sides.right
+            st.pad_bottom = sides.bottom
+            st.pad_left = sides.left
+            st.padding = sides.top  ;; pole `padding` zachowane wstecznie: pokazuje "top", patrz layout.h#
+        elsif d.prop == "padding-top" is st.pad_top = parse_box_px(d.val, em_base)
+        elsif d.prop == "padding-right" is st.pad_right = parse_box_px(d.val, em_base)
+        elsif d.prop == "padding-bottom" is st.pad_bottom = parse_box_px(d.val, em_base)
+        elsif d.prop == "padding-left" is st.pad_left = parse_box_px(d.val, em_base)
+        elsif d.prop == "margin" is
+            let sides: BoxSides = parse_margin_shorthand(d.val, em_base)
+            st.mar_top = sides.top
+            st.mar_right = sides.right
+            st.mar_bottom = sides.bottom
+            st.mar_left = sides.left
+            ;; pole `margin` zachowane wstecznie: pokazuje "top" — ale
+            ;; jeśli "top" jest auto (rzadkie, zwykle 0 i tak), sentinel
+            ;; -1 by tu przeciekł; parse_margin_tb nigdy nie zwraca -1,
+            ;; więc to bezpieczne bez dodatkowej gałęzi.
+            st.margin = sides.top
+        elsif d.prop == "margin-top" is st.mar_top = parse_margin_tb(d.val, em_base)
+        elsif d.prop == "margin-right" is st.mar_right = parse_margin_lr(d.val, em_base)
+        elsif d.prop == "margin-bottom" is st.mar_bottom = parse_margin_tb(d.val, em_base)
+        elsif d.prop == "margin-left" is st.mar_left = parse_margin_lr(d.val, em_base)
+        elsif d.prop == "font-size" is st.font_size = parse_px(d.val, em_base)
+        elsif d.prop == "border" is st.border = parse_px(d.val, em_base)
         elsif d.prop == "border-color" is st.border_color = parse_color(d.val)
-        elsif d.prop == "gap" is st.gap = parse_px(d.val)
+        elsif d.prop == "gap" is st.gap = parse_px(d.val, em_base)
         elsif d.prop == "flex-direction" is st.flex_dir = string_trim(d.val)
         elsif d.prop == "justify-content" is st.justify = string_trim(d.val)
         elsif d.prop == "align-items" is st.align = string_trim(d.val)
+        elsif d.prop == "text-align" is st.text_align = string_trim(d.val)
+        elsif d.prop == "opacity" is st.opacity = parse_opacity(d.val)
         end
     end
     return st

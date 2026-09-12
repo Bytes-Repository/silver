@@ -1,6 +1,6 @@
 [package]
 -> name        => silver
--> version     => 0.1.0
+-> version     => 0.2.0
 -> description => Tauri-podobny framework okienkowy z własnym silnikiem renderującym (bez WebView)
 -> author      => Bytes Developers
 -> license     => MIT
@@ -12,10 +12,6 @@
 -> emit   => lib
 
 [deps]
-;; Silver mówi z natywnym systemem okienkowym przez FFI (extern dynamic),
-;; nie przez std -> gtk (ten moduł jeszcze nie istnieje w H# — zobacz README).
--> SDL2       => dynamic
--> SDL2_image => dynamic
--> quickjs    => dynamic
-;; tinyfiledialogs (native/silver_dialogs_shim.c) — pobierz osobno,
-;; nie jest pakietem bytes ani systemowym; patrz native/README.md.
+-> SDL2       => static
+-> SDL2_image => static
+-> quickjs    => static

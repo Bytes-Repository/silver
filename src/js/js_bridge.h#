@@ -1,4 +1,4 @@
-extern dynamic [c, "silverjs"] is
+extern static [c, "silverjs"] is
     fn js_init(win_handle: int) -> int              ;; -> kontekst JS (uchwyt) albo -1
     fn js_load_file(js_handle: int, path: string) -> bool
     fn js_poll_invoke(js_handle: int) -> string       ;; "" | "call_id\u0001cmd\u0001json"

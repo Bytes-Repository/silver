@@ -6,7 +6,7 @@ fn tpl_manifest(name: string) -> string is
     return "! " + name + " — aplikacja Silver\n\n" +
         "[package]\n" +
         "-> name        => " + name + "\n" +
-        "-> version     => 0.1.0\n" +
+        "-> version     => 0.2.0\n" +
         "-> description => Aplikacja desktopowa zbudowana z Silver\n\n" +
         "[build]\n" +
         "-> lang   => h#\n" +
@@ -54,7 +54,8 @@ fn tpl_style_css() -> string is
 end
 
 fn tpl_app_js() -> string is
-    return "// Prawdziwy JS jest dostępny od Silver v0.2 (native/silver_quickjs_shim.c),\n" +
+    return "// Prawdziwy JS jest dostępny przez native/silver_quickjs_shim.c\n" +
+        "// (od v0.2 linkowany statycznie, jak reszta shimów Silver),\n" +
         "// ale trzeba go jawnie włączyć w src/main.h#:\n" +
         "//\n" +
         "//   a = app::load_js(a, [\"<ścieżka-do-pakietu-silver>/src/js/silver_api.js\",\n" +
@@ -70,7 +71,9 @@ fn tpl_app_js() -> string is
 end
 
 fn tpl_gitignore() -> string is
-    return "build/\n*.so\n*.o\n"
+    ;; v0.2: shimy Silver linkowane statycznie (.a), .so już nie
+    ;; jest domyślnym artefaktem — patrz native/README.md.
+    return "build/\n*.a\n*.o\n"
 end
 
 pub fn cmd_new(name: string) -> int is
@@ -99,7 +102,7 @@ pub fn cmd_new(name: string) -> int is
     write("Utworzono: " + name)
     write("")
     write("Uwaga: dołącz font .ttf do frontend/fonts/ (np. DejaVu Sans)")
-    write("       oraz zbuduj native/silver_shim.c -> libsilvershim.so")
+    write("       oraz zbuduj native/silver_shim.c -> libsilvershim.a (statycznie)")
     write("       (patrz native/README.md w repo Silver).")
     write("")
     write("Dalej:")

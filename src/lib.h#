@@ -4,5 +4,5 @@ use "silver -> ipc"    from "ipc"
 use "silver -> dialog" from "dialog"
 
 pub fn version() -> string is
-    return "0.1.0"
+    return "0.2.0"
 end

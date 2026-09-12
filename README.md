@@ -15,7 +15,7 @@ frontend/ (HTML + CSS + JS)          src/ (H#)
                                           engine/     — DOM/CSS/layout/paint
 ```
 
-## Status: v0.3 — rozbudowany silnik, coraz bliżej Tauri
+## Status: v0.2 — statyczne linkowanie, rozbudowany silnik
 
 To jest uczciwa informacja, nie skromność. Ta biblioteka **nie została
 skompilowana ani przetestowana** w środowisku, w którym powstała (brak
@@ -24,19 +24,75 @@ Kod jest napisany najbliżej jak się dało realnej, potwierdzonej składni
 H# (wzorowany na faktycznym kodzie źródłowym `bytes`), ale zanim
 zaczniesz budować na tym produkcyjną aplikację, przeczytaj
 **`ROADMAP.md`** — sekcje "Blokery po stronie samego H#" i "Rzeczy do
-zweryfikowania przy pierwszym buildzie" (w v0.3 doszedł m.in.
-rekurencyjny enum w `engine/json.h#` — to najbardziej ryzykowna
-konstrukcja typu w całym projekcie). Część fundamentów, na których
-stoi Silver (`std -> mem`, `std -> async_`, `std -> gtk`), jest w samym
-H# jeszcze niedokończona lub w ogóle nie istnieje.
+zweryfikowania przy pierwszym buildzie" (m.in. rekurencyjny enum w
+`engine/json.h#` — to najbardziej ryzykowna konstrukcja typu w całym
+projekcie). Część fundamentów, na których stoi Silver (`std -> mem`,
+`std -> async_`, `std -> gtk`), jest w samym H# jeszcze niedokończona
+lub w ogóle nie istnieje.
 
-Co doszło w v0.3: realny pomiar tekstu (nie szacowanie), flexbox
-(uproszczony), `<img>`, scroll, edytowalne `<input>`, natywne dialogi
-systemowe (open/save/dialog przez tinyfiledialogs), pełny zagnieżdżony
-JSON (`engine/json.h#`, niezależny od stubowego `std -> json`), hot
-reload frontendu, prosty system uprawnień komend, testy jednostkowe
-parserów, oraz naprawiony podwójny layout na klik. Pełna lista w
-`ROADMAP.md`.
+Co doszło w v0.2: **wszystkie trzy natywne shimy Silver (`silvershim`,
+`silverjs`, `silverdialogs`) są teraz deklarowane jako `extern static`
+zamiast `extern dynamic`** — zamiast `.so` obok binarki i
+`LD_LIBRARY_PATH`, budujesz archiwa `.a` (`ar rcs`), które linker H#
+wkleja bezpośrednio do finalnej binarki (patrz `native/README.md`).
+Jeden plik wykonywalny, brak problemów z `rpath`, prostsze pakowanie
+AppImage/.deb. Doszedł też **pełny box model per-strona** — `padding`/
+`margin` przyjmują teraz skróty CSS na 1/2/3/4 wartości (`padding: 10px
+20px`) i longhand (`padding-top`, `margin-left`, ...), zamiast jednej
+liczby dla wszystkich boków — oraz **`text-align`** (left/center/right,
+dziedziczone, wyrównuje linie tekstu) i **`opacity`** (0.0–1.0 albo
+`NN%`, nie dziedziczone, skaluje teraz alfę wszystkiego — tła, tekstu,
+obramowań i `<img>`, nie tylko tła jak wcześniej; wymagało to
+dodania kanału alfa do `silver_draw_text`/`silver_stroke_rect`/
+`silver_draw_image` w natywnym shimie, więc jeśli masz już zbudowane
+`.a`, przebuduj je — przy okazji naprawiony brakujący
+`SDL_SetRenderDrawBlendMode`, przez który `opacity` na tle mogło nie
+działać wcale, patrz `ROADMAP.md`). CSS zyskał też **grupowanie
+selektorów przecinkiem** (`.a, .b { ... }`) i **selektory potomka/
+dziecka** (`.card p`, `.a > .b`), rozwiązywane drzewo-świadomie przez
+`css::matching_decls_ctx`/`style::resolve_ctx` (chodzą po `dom::Dom`
+w górę — patrz `engine/css.h#`) — oraz **selektory rodzeństwa**
+(`.a + .b` najbliższe, `.a ~ .b` dowolne dalsze) i **pseudoklasy
+`:hover`/`:focus`/`:active`** (np. `.btn:hover { background: ... }`),
+obsługiwane przez nowy `css::InteractionState` wątkowany przez cały
+layout (`app::compute` → `layout::layout_i` → ... → `node_matches_simple`) —
+`app.h#` śledzi teraz też `hovered_node` (hit-test na zdarzeniu
+`mouse_move`, wcześniej w ogóle nieobsługiwanym) i `active_node`
+(od `mouse_down` do `mouse_up`, to drugie zdarzenie też wcześniej
+nieobsługiwane) — oba przez nowy `paint::hit_test_any`, więc
+`:hover`/`:active` działają teraz na DOWOLNYM elemencie ze stylem, nie
+tylko na tych z `on-click` (dawniej udokumentowane ograniczenie), i
+**propagują się do przodków** — najechanie na tekst wewnątrz
+`<button><span>...</span></button>` dopasowuje regułę zdefiniowaną na
+samym `<button>`, dokładnie jak w prawdziwej przeglądarce (`:focus`
+celowo się NIE propaguje, zgodnie z prawdziwym CSS — do tego jest
+osobna pseudoklasa **`:focus-within`**, np. `.form-group:focus-within
+{ border-color: blue; }` podświetla całą grupę, gdy `<input>` w
+środku ma focus). Doszły też
+**pseudoklasy pozycyjne**: `:nth-child(...)`
+(formuła `an+b`, `odd`/`even`, samą liczbę — np. `li:nth-child(2n+1)`,
+`li:nth-child(odd)`), `:nth-last-child(...)` (jak wyżej, licząc od
+końca), `:first-child`, `:last-child`, `:only-child` — wszystkie
+niezależne od `InteractionState` (pozycja w drzewie jest statyczna).
+Doszło też **`margin: auto`**
+(`margin-left`/`margin-right: auto` albo skrót `margin: 0 auto`) —
+centruje blok albo obrazek o znanej szerokości w dostępnej przestrzeni
+(nie działa jeszcze dla dzieci flexboksa — patrz `ROADMAP.md`). I na
+koniec (ostatnia rozbudowa przed tym wydaniem): **jednostki `em`/`rem`**
+na wszystkich właściwościach długościowych (`width`, `height`,
+`padding`/`margin`, `border`, `gap`, `font-size`) — `rem` zawsze liczy
+od stałych 16px, `em` od odziedziczonego font-size (uproszczenie
+opisane w `ROADMAP.md`); wartość bez jednostki nadal parsuje się jak
+`px`. Poza tym (z wcześniejszego
+rozwoju silnika, skonsolidowane pod v0.2): realny pomiar tekstu (nie
+szacowanie), flexbox (uproszczony), `<img>`, scroll, edytowalne
+`<input>`, natywne dialogi systemowe (open/save/dialog przez
+tinyfiledialogs), pełny zagnieżdżony JSON (`engine/json.h#`, niezależny
+od stubowego `std -> json`), hot reload frontendu, prosty system
+uprawnień komend, testy jednostkowe parserów, oraz naprawiony podwójny
+layout na klik. Pełna lista i znane ograniczenia w `ROADMAP.md` (nowy
+plik od tego przejścia — był referencjonowany z całego repo, ale
+fizycznie nie istniał).
 
 Co działa dziś (na poziomie architektury/kodu źródłowego): HTML/CSS z
 dziedziczeniem koloru/rozmiaru czcionki i podstawowym zawijaniem
@@ -50,12 +106,13 @@ stanu aplikacji.
 
 ```bash
 cd native
-gcc -shared -fPIC -O2 silver_shim.c -o libsilvershim.so \
-    $(pkg-config --cflags --libs sdl2 SDL2_ttf SDL2_image)
+gcc -c -fPIC -O2 silver_shim.c -o silver_shim.o \
+    $(pkg-config --cflags sdl2 SDL2_ttf SDL2_image)
+ar rcs libsilvershim.a silver_shim.o
 # opcjonalnie, dla prawdziwego JS w frontend/app.js:
-gcc -shared -fPIC -O2 silver_quickjs_shim.c -o libsilverjs.so \
-    -I/path/do/quickjs -lquickjs -lm -lpthread
-# skopiuj .so tam, gdzie H# ładuje extern dynamic
+gcc -c -fPIC -O2 silver_quickjs_shim.c -o silver_quickjs_shim.o -I/path/do/quickjs
+ar rcs libsilverjs.a silver_quickjs_shim.o
+# .a jest linkowane statycznie przez extern static — patrz native/README.md
 
 silver new moja-apka
 cd moja-apka
@@ -91,8 +148,8 @@ end
 </div>
 ```
 
-Pełniejszy przykład ze stanem aplikacji i `{{count}}`: `examples/counter/`.
-Flex, edytowalny `<input>` i natywny dialog: `examples/kitchen_sink/`.
+Pełniejszy przykład ze stanem aplikacji i `{{count}}`: `templates/counter/`.
+Flex, edytowalny `<input>` i natywny dialog: `templates/kitchen_sink/`.
 
 ## Przykład — prawdziwy JS zamiast on-click
 
@@ -147,31 +204,31 @@ native/
   silver_shim.c               SDL2(+_image) → płaskie funkcje C wołane przez FFI
   silver_quickjs_shim.c        QuickJS → poll-queue most JS ↔ H#
   silver_dialogs_shim.c         tinyfiledialogs → natywne dialogi
-  README.md                      jak zbudować wszystkie .so
+  README.md                      jak zbudować wszystkie .a (statyczne)
 src/
-  ffi_shim.h#                 extern dynamic (SDL2) — okno/rysowanie/obrazki
-  ffi_dialogs.h#                extern dynamic (tinyfiledialogs)
+  ffi_shim.h#                 extern static (SDL2) — okno/rysowanie/obrazki
+  ffi_dialogs.h#                extern static (tinyfiledialogs)
   window.h#                      wygodne API okna
   dialog.h#                        natywne dialogi (open/save/confirm)
   ipc.h#                              rejestr komend + Origin (Both/HtmlOnly/JsOnly)
-  app.h#                                builder + główna pętla + most JS + scroll/input/hot-reload
+  app.h#                                builder + główna pętla + most JS + scroll/input/hover/hot-reload
   lib.h#                                  punkt wejścia pakietu
   engine/
     dom.h#      parser HTML → płaskie drzewo węzłów (+ src/value)
-    css.h#       parser CSS → reguły + kaskada (+ flex/gap/justify/align)
-    style.h#      CssDecl → ComputedStyle (kolory, box model, dziedziczenie)
+    css.h#       parser CSS → reguły + kaskada + komentarze `/* */` + grupowanie `,` + selektory potomka/dziecka/rodzeństwa + `:hover`/`:focus`/`:focus-within`/`:active`/`:nth-child`/`:first-child`/`:last-child`/`:only-child` (+ flex/gap/justify/align)
+    style.h#      CssDecl → ComputedStyle (kolory, box model per-strona, text-align, opacity, jednostki px/em/rem, dziedziczenie)
     layout.h#      block stack + inline flow + flexbox + realny pomiar tekstu
     paint.h#         rysowanie (+ obrazki, edytowalne <input>, scroll)
     template.h#        {{klucz}} → wartość z app::store (reaktywny tekst)
     json.h#              pełny, zagnieżdżony JSON (niezależny od std -> json)
   js/
-    js_bridge.h#    extern dynamic (QuickJS) — most invoke/listen, podłączony
+    js_bridge.h#    extern static (QuickJS) — most invoke/listen, podłączony
     silver_api.js    frontendowe silver.invoke()/silver.listen()
   cli/
     silver_cli.h#     `silver new <nazwa>`
 templates/vanilla/       szablon dla `silver new`
-examples/counter/         przykład ze stanem + {{count}}
-examples/kitchen_sink/     flex + <input> + natywny dialog
+templates/counter/         przykład ze stanem + {{count}}
+templates/kitchen_sink/     flex + <input> + natywny dialog
 tests/engine_tests.h#       testy jednostkowe parserów DOM/CSS/JSON
 packaging/                  szkic AppImage/.deb (Linux, nieprzetestowane)
 .github/workflows/ci.yml     szkic CI (kroki TODO tam, gdzie zależą od toolchaina H#)

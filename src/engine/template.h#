@@ -1,4 +1,4 @@
-use "silver -> engine -> dom" from "dom"
+mod dom
 use "std -> json" from "json"
 
 fn substitute(text: string, store: string) -> string is
@@ -49,5 +49,5 @@ pub fn apply_state(dom: dom::Dom, store: string) -> dom::Dom is
             out_nodes = array_push(out_nodes, n)
         end
     end
-    return dom::Dom { nodes: out_nodes }
+    return Dom { nodes: out_nodes }
 end

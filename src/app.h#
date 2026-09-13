@@ -1,13 +1,8 @@
-use "silver -> window"           from "window"
-use "silver -> ffi_shim"           from "ffi"
-use "silver -> ipc"                  from "ipc"
-use "silver -> js -> js_bridge"        from "js"
-use "silver -> engine -> dom"        from "dom"
-use "silver -> engine -> css"         from "css"
-use "silver -> engine -> layout"       from "layout"
-use "silver -> engine -> paint"         from "paint"
-use "silver -> engine -> template"       from "template"
-use "silver -> engine -> json"           from "ejson"
+mod window
+mod ffi_shim
+mod ipc
+mod js
+mod engine
 use "std -> fs"                          from "fs"
 use "std -> log"                          from "log"
 use "std -> json"                          from "json"
@@ -28,7 +23,7 @@ pub struct App is
     pub js_handle: int       ;; -1 = brak JS (tylko on-click w HTML), >=0 = kontekst QuickJS
 
     pub scroll_y:      int              ;; offset przewijania strony w px
-    pub input_values:  ejson::JsonValue   ;; { attr_id: aktualna wartość <input> }
+    pub input_values:  jsonval::JsonValue   ;; { attr_id: aktualna wartość <input> }
     pub focused_input: string              ;; attr_id focusowanego <input>, "" = brak
     pub hovered_node:  int                  ;; rozbudowa v0.2: node_id pod kursorem
                                               ;; (dla CSS `:hover`), -1 = mysz poza treścią
@@ -71,7 +66,7 @@ pub fn new(title: string, width: int, height: int) -> App is
         store: json::object(),
         js_handle: -1,
         scroll_y: 0,
-        input_values: ejson::obj(),
+        input_values: jsonval::obj(),
         focused_input: "",
         hovered_node: -1,
         active_node: -1,
@@ -105,7 +100,7 @@ end
 ;; NAPISAŁ od uruchomienia; wartość początkowa jest w dom po stronie
 ;; paint.h# jako fallback wyświetlania, nie tutaj).
 pub fn input_value(app: App, input_id: string) -> string is
-    return ejson::get_str(app.input_values, input_id)
+    return jsonval::get_str(app.input_values, input_id)
 end
 
 pub fn with_font(app: App, ttf_path: string, size: int) -> App is
@@ -183,7 +178,7 @@ end
 
 pub fn load_js(app: App, files: [string]) -> App is
     let mut a: App = app
-    a.js_handle = js::js_init(a.win.handle)
+    a.js_handle = js_bridge::js_init(a.win.handle)
     if a.js_handle < 0 is
         log::warn("Silver: nie udało się zainicjować QuickJS (libsilverjs.a wlinkowany statycznie? patrz native/README.md) — silver.invoke() z JS nie zadziała")
         return a
@@ -191,7 +186,7 @@ pub fn load_js(app: App, files: [string]) -> App is
     let count: int = array_len(files)
     let mut i: int = 0
     while i < count is
-        let ok: bool = js::js_load_file(a.js_handle, files[i])
+        let ok: bool = js_bridge::js_load_file(a.js_handle, files[i])
         if !ok is
             log::warn("Silver: błąd ładowania " + files[i] + " (patrz stderr shimu QuickJS)")
         end
@@ -203,7 +198,7 @@ end
 ;; Wysyła zdarzenie do wszystkich `silver.listen("nazwa", cb)` w JS.
 pub fn emit(app: App, event_name: string, payload_json: string) is
     if app.js_handle < 0 is return end
-    js::js_emit(app.js_handle, event_name, payload_json)
+    js_bridge::js_emit(app.js_handle, event_name, payload_json)
 end
 
 struct DrainResult is
@@ -217,7 +212,7 @@ fn drain_js_invokes(app: App) -> DrainResult is
     if a.js_handle < 0 is return DrainResult { app: a, handled: false } end
     let mut go: bool = true
     while go is
-        let msg: string = js::js_poll_invoke(a.js_handle)
+        let msg: string = js_bridge::js_poll_invoke(a.js_handle)
         if msg == "" is
             go = false
         else is
@@ -227,7 +222,7 @@ fn drain_js_invokes(app: App) -> DrainResult is
                 let cmd: string = parts[1]
                 let args_json: string = parts[2]
                 let result: string = ipc::dispatch_from(a.router, cmd, args_json, "js")
-                js::js_resolve(a.js_handle, call_id, result)
+                js_bridge::js_resolve(a.js_handle, call_id, result)
                 log::debug("Silver(JS): komenda '" + cmd + "' -> " + result)
                 handled = true
             end
@@ -367,14 +362,14 @@ pub fn run(app: App) is
             a = handle_mouse_move(a, pass, ev.x, ev.y)
             if a.hovered_node != before_hover is dirty = true end
         elsif ev.kind == "text" && a.focused_input != "" is
-            let cur: string = ejson::get_str(a.input_values, a.focused_input)
-            a.input_values = ejson::obj_set(a.input_values, a.focused_input, ejson::str(cur + ev.text))
+            let cur: string = jsonval::get_str(a.input_values, a.focused_input)
+            a.input_values = jsonval::obj_set(a.input_values, a.focused_input, jsonval::str(cur + ev.text))
             dirty = true
         elsif ev.kind == "key_down" && a.focused_input != "" && ev.code == key_backspace() is
-            let cur: string = ejson::get_str(a.input_values, a.focused_input)
+            let cur: string = jsonval::get_str(a.input_values, a.focused_input)
             if string_len(cur) > 0 is
                 let trimmed: string = string_slice(cur, 0, string_len(cur) - 1)
-                a.input_values = ejson::obj_set(a.input_values, a.focused_input, ejson::str(trimmed))
+                a.input_values = jsonval::obj_set(a.input_values, a.focused_input, jsonval::str(trimmed))
                 dirty = true
             end
         elsif ev.kind == "scroll" is
@@ -412,11 +407,11 @@ pub fn run(app: App) is
             paint_pass(a, pass)
         end
 
-        ffi::silver_delay(16)
+        ffi_shim::silver_delay(16)
     end
 
     if a.js_handle >= 0 is
-        js::js_shutdown(a.js_handle)
+        js_bridge::js_shutdown(a.js_handle)
     end
     window::close(a.win)
 end

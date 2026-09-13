@@ -1,5 +1,5 @@
-use "silver -> engine -> css" from "css"
-use "silver -> engine -> dom" from "dom"
+mod css
+mod dom
 use "std -> conv" from "conv"
 
 pub struct Color is

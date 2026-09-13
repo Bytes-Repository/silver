@@ -1,7 +1,7 @@
-use "silver -> ffi_shim"    from "ffi"
-use "silver -> engine -> dom"    from "dom"
-use "silver -> engine -> layout" from "layout"
-use "silver -> engine -> json"    from "json"
+mod ffi_shim
+mod dom
+mod layout
+mod jsonval
 
 ;; Skaluje kanał alfa przez opacity (0..100, patrz engine/style.h#).
 ;; opacity: 100 (domyślne, w pełni kryjące) zwraca `a` bez zmian.
@@ -14,8 +14,8 @@ pub fn scaled_alpha(a: int, opacity: int) -> int is
 end
 
 pub fn render(win_handle: int, boxes: [layout::LayoutBox], dom: dom::Dom,
-              scroll_y: int, input_values: json::JsonValue, focused_id: string) is
-    ffi::silver_clear(win_handle, 250, 250, 250)
+              scroll_y: int, input_values: jsonval::JsonValue, focused_id: string) is
+    ffi_shim::silver_clear(win_handle, 250, 250, 250)
 
     let count: int = array_len(boxes)
     let mut i: int = count - 1
@@ -25,25 +25,25 @@ pub fn render(win_handle: int, boxes: [layout::LayoutBox], dom: dom::Dom,
         let by: int = b.y - scroll_y
 
         if b.img_src != "" is
-            ffi::silver_draw_image(win_handle, b.img_src, b.x, by, b.w, b.h,
+            ffi_shim::silver_draw_image(win_handle, b.img_src, b.x, by, b.w, b.h,
                 scaled_alpha(255, b.st.opacity))
             continue
         end
 
         if b.text != "" is
-            ffi::silver_draw_text(win_handle, b.x, by, b.text,
+            ffi_shim::silver_draw_text(win_handle, b.x, by, b.text,
                 b.st.color.r, b.st.color.g, b.st.color.b,
                 scaled_alpha(b.st.color.a, b.st.opacity))
             continue
         end
 
         if b.st.has_bg is
-            ffi::silver_fill_rect(win_handle, b.x, by, b.w, b.h,
+            ffi_shim::silver_fill_rect(win_handle, b.x, by, b.w, b.h,
                 b.st.background.r, b.st.background.g, b.st.background.b,
                 scaled_alpha(b.st.background.a, b.st.opacity))
         end
         if b.st.border > 0 is
-            ffi::silver_stroke_rect(win_handle, b.x, by, b.w, b.h,
+            ffi_shim::silver_stroke_rect(win_handle, b.x, by, b.w, b.h,
                 b.st.border_color.r, b.st.border_color.g, b.st.border_color.b,
                 scaled_alpha(b.st.border_color.a, b.st.opacity))
         end
@@ -53,25 +53,25 @@ pub fn render(win_handle: int, boxes: [layout::LayoutBox], dom: dom::Dom,
         end
     end
 
-    ffi::silver_present(win_handle)
+    ffi_shim::silver_present(win_handle)
 end
 
 fn draw_input(win_handle: int, dom: dom::Dom, b: layout::LayoutBox, by: int,
-              input_values: json::JsonValue, focused_id: string) is
+              input_values: jsonval::JsonValue, focused_id: string) is
     let node: dom::DomNode = dom.nodes[b.node_id]
-    let stored: string = json::get_str(input_values, node.attr_id)
+    let stored: string = jsonval::get_str(input_values, node.attr_id)
     let value: string = if stored != "" then stored else node.attr_value
     let text_x: int = b.x + 8
     let text_y: int = by + (b.h - b.st.font_size) / 2
 
     if value != "" is
-        ffi::silver_draw_text(win_handle, text_x, text_y, value,
+        ffi_shim::silver_draw_text(win_handle, text_x, text_y, value,
             b.st.color.r, b.st.color.g, b.st.color.b, 255)
     end
 
     if node.attr_id != "" && node.attr_id == focused_id is
-        let cursor_x: int = text_x + ffi::silver_measure_text(win_handle, value) + 2
-        ffi::silver_fill_rect(win_handle, cursor_x, by + 4, 2, b.h - 8,
+        let cursor_x: int = text_x + ffi_shim::silver_measure_text(win_handle, value) + 2
+        ffi_shim::silver_fill_rect(win_handle, cursor_x, by + 4, 2, b.h - 8,
             b.st.color.r, b.st.color.g, b.st.color.b, 255)
     end
 end

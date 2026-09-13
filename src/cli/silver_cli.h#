@@ -17,7 +17,7 @@ fn tpl_manifest(name: string) -> string is
 end
 
 fn tpl_main(name: string) -> string is
-    return "use \"silver -> app\" from \"app\"\n\n" +
+    return "use \"bytes -> silver\" from \"app\"\n\n" +
         "fn greet(args_json: string) -> string is\n" +
         "    write(\"greet() wywołane z frontendu\")\n" +
         "    return \"{\\\"message\\\": \\\"Cześć z H#!\\\"}\"\n" +

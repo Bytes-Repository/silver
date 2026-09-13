@@ -1,4 +1,4 @@
-use "silver -> ffi_shim" from "ffi"
+mod ffi_shim
 
 pub struct Window is
     pub handle: int
@@ -20,7 +20,7 @@ pub struct InputEvent is
 end
 
 pub fn create(title: string, width: int, height: int) -> Window is
-    let h: int = ffi::silver_window_create(title, width, height)
+    let h: int = ffi_shim::silver_window_create(title, width, height)
     return Window { handle: h, title: title, width: width, height: height, open: h >= 0 }
 end
 
@@ -28,23 +28,23 @@ end
 ;; Domyślnie warto wskazać jakiś font systemowy, np.
 ;; "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 pub fn load_font(win: Window, path: string, size: int) -> bool is
-    return ffi::silver_load_font(win.handle, path, size)
+    return ffi_shim::silver_load_font(win.handle, path, size)
 end
 
 pub fn is_open(win: Window) -> bool is
-    return win.open && ffi::silver_is_open(win.handle)
+    return win.open && ffi_shim::silver_is_open(win.handle)
 end
 
 ;; Zwraca kolejne zdarzenie wejścia z kolejki SDL. Wołaj w pętli
 ;; (`while true` z `poll` zwracającym "none" gdy kolejka pusta) raz na
 ;; klatkę, zanim wykonasz layout/paint.
 pub fn poll(win: Window) -> InputEvent is
-    let code: int = ffi::silver_poll_event(win.handle)
+    let code: int = ffi_shim::silver_poll_event(win.handle)
     if code == 0 is
         return InputEvent { kind: "none", x: 0, y: 0, code: 0, text: "" }
     end
 
-    let payload: string = ffi::silver_event_payload(win.handle)
+    let payload: string = ffi_shim::silver_event_payload(win.handle)
     let parts: [string] = payload.split("|")
     let px: int = if parts.len() > 0 then str_to_int(parts[0]) else 0
     let py: int = if parts.len() > 1 then str_to_int(parts[1]) else 0
@@ -70,37 +70,37 @@ end
 ;; resize — window::poll aktualizuje win.width/height dopiero gdy
 ;; dostaniesz event "resize"; to jest zawsze świeże).
 pub fn ffi_width(win: Window) -> int is
-    return ffi::silver_get_width(win.handle)
+    return ffi_shim::silver_get_width(win.handle)
 end
 
 pub fn ffi_height(win: Window) -> int is
-    return ffi::silver_get_height(win.handle)
+    return ffi_shim::silver_get_height(win.handle)
 end
 
 pub fn set_title(win: Window, title: string) -> bool is
-    return ffi::silver_set_title(win.handle, title)
+    return ffi_shim::silver_set_title(win.handle, title)
 end
 
 pub fn present(win: Window) -> bool is
-    return ffi::silver_present(win.handle)
+    return ffi_shim::silver_present(win.handle)
 end
 
 pub fn close(win: Window) -> bool is
-    return ffi::silver_window_close(win.handle)
+    return ffi_shim::silver_window_close(win.handle)
 end
 
 ;; Włącza/wyłącza przechwytywanie tekstu (SDL_StartTextInput) — wołaj
 ;; przy focusowaniu/blurowaniu edytowalnego <input>, patrz app.h#.
 pub fn start_text_input(win: Window) -> bool is
-    return ffi::silver_start_text_input(win.handle)
+    return ffi_shim::silver_start_text_input(win.handle)
 end
 
 pub fn stop_text_input(win: Window) -> bool is
-    return ffi::silver_stop_text_input(win.handle)
+    return ffi_shim::silver_stop_text_input(win.handle)
 end
 
 ;; "dark" | "light" — best-effort, patrz native/silver_shim.c (na dziś
 ;; tylko Linux/GNOME; inne platformy zawsze "light").
 pub fn system_theme() -> string is
-    return ffi::silver_system_theme()
+    return ffi_shim::silver_system_theme()
 end

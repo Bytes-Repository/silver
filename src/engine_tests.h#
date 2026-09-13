@@ -1,9 +1,4 @@
-use "silver -> engine -> dom"  from "dom"
-use "silver -> engine -> css"   from "css"
-use "silver -> engine -> style"  from "style"
-use "silver -> engine -> layout"  from "layout"
-use "silver -> engine -> paint"   from "paint"
-use "silver -> engine -> json"    from "json"
+mod engine
 use "std -> test" from "test"
 
 ;; ---------- dom::parse ----------
@@ -971,33 +966,33 @@ end
 
 #[test]
 fn test_json_roundtrip_flat() is
-    let v: json::JsonValue = json::parse("{\"name\": \"Ala\", \"age\": 7}")
-    assert_eq(json::get_str(v, "name"), "Ala")
-    assert_eq(json::as_num(json::get(v, "age")), 7.0)
+    let v: jsonval::JsonValue = jsonval::parse("{\"name\": \"Ala\", \"age\": 7}")
+    assert_eq(jsonval::get_str(v, "name"), "Ala")
+    assert_eq(jsonval::as_num(jsonval::get(v, "age")), 7.0)
 end
 
 #[test]
 fn test_json_nested_object_and_array() is
-    let v: json::JsonValue = json::parse("{\"items\": [1, 2, 3], \"meta\": {\"ok\": true}}")
-    let items: json::JsonValue = json::get(v, "items")
-    assert_eq(json::arr_len(items), 3)
-    assert_eq(json::as_num(json::arr_get(items, 1)), 2.0)
+    let v: jsonval::JsonValue = jsonval::parse("{\"items\": [1, 2, 3], \"meta\": {\"ok\": true}}")
+    let items: jsonval::JsonValue = jsonval::get(v, "items")
+    assert_eq(jsonval::arr_len(items), 3)
+    assert_eq(jsonval::as_num(jsonval::arr_get(items, 1)), 2.0)
 
-    let meta: json::JsonValue = json::get(v, "meta")
-    assert_true(json::as_bool(json::get(meta, "ok")))
+    let meta: jsonval::JsonValue = jsonval::get(v, "meta")
+    assert_true(jsonval::as_bool(jsonval::get(meta, "ok")))
 end
 
 #[test]
 fn test_json_builder_and_stringify() is
-    let mut o: json::JsonValue = json::obj()
-    o = json::obj_set(o, "count", json::num(3.0))
-    o = json::obj_set(o, "label", json::str("x"))
-    let out: string = json::stringify(o)
+    let mut o: jsonval::JsonValue = jsonval::obj()
+    o = jsonval::obj_set(o, "count", jsonval::num(3.0))
+    o = jsonval::obj_set(o, "label", jsonval::str("x"))
+    let out: string = jsonval::stringify(o)
     ;; nie zakładamy dokładnej kolejności kluczy poza wstawianiem —
     ;; sprawdzamy, że parsowanie z powrotem daje te same wartości
-    let reparsed: json::JsonValue = json::parse(out)
-    assert_eq(json::as_num(json::get(reparsed, "count")), 3.0)
-    assert_eq(json::get_str(reparsed, "label"), "x")
+    let reparsed: jsonval::JsonValue = jsonval::parse(out)
+    assert_eq(jsonval::as_num(jsonval::get(reparsed, "count")), 3.0)
+    assert_eq(jsonval::get_str(reparsed, "label"), "x")
 end
 
 ;; ---------- engine::paint — rozbudowa: alfa dla tekstu/obramowań/obrazków ----------

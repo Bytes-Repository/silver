@@ -1,4 +1,4 @@
-use "silver -> engine -> dom" from "dom"
+mod dom
 
 pub struct CssDecl is
     pub prop: string

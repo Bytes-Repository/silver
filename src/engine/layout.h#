@@ -1,7 +1,7 @@
-use "silver -> ffi_shim"      from "ffi"
-use "silver -> engine -> dom"     from "dom"
-use "silver -> engine -> css"      from "css"
-use "silver -> engine -> style"     from "style"
+mod ffi_shim
+mod dom
+mod css
+mod style
 
 pub struct LayoutBox is
     pub node_id: int
@@ -29,7 +29,7 @@ end
 ;; `win_handle == -1` -> szacowanie (np. testy jednostkowe bez SDL).
 fn measure_text(win_handle: int, text: string, font_size: int) -> int is
     if win_handle < 0 is return est_text_width(text, font_size) end
-    let w: int = ffi::silver_measure_text(win_handle, text)
+    let w: int = ffi_shim::silver_measure_text(win_handle, text)
     if w <= 0 is return est_text_width(text, font_size) end
     return w
 end
@@ -70,10 +70,10 @@ fn image_size(win_handle: int, path: string, st: style::ComputedStyle) -> Layout
     let mut w: int = st.width
     let mut h: int = st.height
     if (w < 0 || h < 0) && win_handle >= 0 is
-        let nat_w: int = ffi::silver_image_width(win_handle, path)
-        let nat_h: int = ffi::silver_image_height(win_handle, path)
-        if w < 0 is w = if nat_w > 0 then nat_w else 100 end
-        if h < 0 is h = if nat_h > 0 then nat_h else 100 end
+        let nat_w: int = ffi_shim::silver_image_width(win_handle, path)
+        let nat_h: int = ffi_shim::silver_image_height(win_handle, path)
+        if w < 0 is w = if nat_w > 0 then nat_w else 100 end end
+        if h < 0 is h = if nat_h > 0 then nat_h else 100 end end
     else is
         if w < 0 is w = 100 end
         if h < 0 is h = 100 end
@@ -283,7 +283,7 @@ fn resolve_auto_margins(ml_in: int, mr_in: int, avail_w: int, used_w: int) -> st
             if mr < 0 is mr = 0 end
         end
     end
-    return style::BoxSides { top: 0, right: mr, bottom: 0, left: ml }
+    return BoxSides { top: 0, right: mr, bottom: 0, left: ml }
 end
 
 fn layout_node(win_handle: int, dom: dom::Dom, sheet: css::Stylesheet, node_id: int,

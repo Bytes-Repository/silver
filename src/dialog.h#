@@ -1,4 +1,4 @@
-use "silver -> ffi_dialogs" from "ffi_dialogs"
+mod ffi_dialogs
 
 ;; Zwraca wybraną ścieżkę pliku, albo "" jeśli użytkownik anulował.
 ;; `filter_pattern` np. "*.png;*.jpg" (puste = wszystkie pliki).

@@ -1,7 +1,7 @@
-use "silver -> app"    from "app"
-use "silver -> window" from "window"
-use "silver -> ipc"    from "ipc"
-use "silver -> dialog" from "dialog"
+mod app
+mod window
+mod ipc
+mod dialog
 
 pub fn version() -> string is
     return "0.2.0"
